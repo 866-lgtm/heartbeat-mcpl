@@ -179,6 +179,8 @@ class HeartbeatServer {
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
+  /** Due reminders are being held for the initial policy (logged once). */
+  private remindersHeldLogged = false;
 
   async serve(conn: McplConnection): Promise<void> {
     this.conn = conn;
@@ -277,6 +279,7 @@ class HeartbeatServer {
       conn.sendError(req.id, -32602, `Invalid featureSets/update: ${parsed.error}`);
       return;
     }
+    const wasReady = this.policyReady;
     this.grant = parsed.grant;
     this.policyReady = true;
     const receipt = buildReceipt(declaredFeatureSets, this.grant);
@@ -292,6 +295,10 @@ class HeartbeatServer {
     }
     for (const note of receipt.notes ?? []) log(`receipt note: ${note}`);
     conn.sendResponse(req.id, receipt);
+    // Ready state just began: release any reminders held for it (see
+    // processDueReminders). Re-arming after the receipt is written means the
+    // held wakes reach the host after the grant they depend on.
+    if (!wasReady) { this.remindersHeldLogged = false; this.scheduleReminders(); }
   }
 
   /**
@@ -590,6 +597,22 @@ class HeartbeatServer {
   /** Fire every reminder that is due, drop one-shots, advance recurring ones to
    *  their next future slot, persist, then re-arm the timer. */
   private processDueReminders(): void {
+    // §5.3: before the initial policy Request, a wake cannot be delivered yet,
+    // which is a wait rather than a refusal. Reminders that came due while the
+    // server was down reach exactly this point: scheduleReminders() runs right
+    // after initialize, before the host's featureSets/update arrives. Firing
+    // them here would consume them (one-shots deleted, recurring ones advanced)
+    // over a push that was never sent. So they stay as they are, and the policy
+    // Request re-arms the timer. No timer is armed meanwhile, so nothing spins.
+    if (this.conn && this.mcplEnabled && !this.policyReady) {
+      this.reminderTimer = null;
+      if (!this.remindersHeldLogged) {
+        this.remindersHeldLogged = true;
+        const due = this.reminders.filter((r) => r.fireAt <= Date.now()).length;
+        log(`holding ${due} due reminder(s) until the host's initial featureSets/update Request (§5.3)`);
+      }
+      return;
+    }
     const now = Date.now();
     const kept: Reminder[] = [];
     let firedAny = false;

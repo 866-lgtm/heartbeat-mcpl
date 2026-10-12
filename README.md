@@ -108,3 +108,9 @@ WARNING: initial policy has still not arrived as a Request. …
 
 That means the host is sending policy as a Notification (or not at all) and must be updated
 before this server can deliver anything.
+
+Reminders that come due before the initial policy Request arrives are held, not fired and
+discarded. This includes reminders that came due while the server was down, which are
+due the moment it restarts. They stay in the reminders file unchanged
+(`holding N due reminder(s) until the host's initial featureSets/update Request` in the log)
+and fire as soon as the Request lands.
