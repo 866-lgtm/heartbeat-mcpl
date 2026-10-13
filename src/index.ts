@@ -23,6 +23,7 @@ import type {
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
+import { formatReminderText } from './reminder-text.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
 } from './mcpl05.js';
@@ -142,7 +143,7 @@ const toolDefinitions = [
   { name: 'reminder_add',
     description: 'Schedule a reminder that wakes you with a specific message. One-shot: give a delay (inSeconds | inMinutes | inHours) OR an absolute time (atIso, an ISO-8601 timestamp). Recurring: give an interval (everySeconds | everyMinutes | everyHours) — the first fire is one interval out unless you also give a delay. Survives restarts. Returns the reminder id.',
     inputSchema: { type: 'object' as const, properties: {
-      message: { type: 'string', description: 'The text delivered to you when the reminder fires.' },
+      message: { type: 'string', description: 'The text delivered to you when the reminder fires. It arrives after a header naming the reminder, when it was set (or its interval) and the current time, e.g. `[reminder <id>, set <time> · current time: <time>] <message>`.' },
       inSeconds: { type: 'number', description: 'One-shot: fire this many seconds from now.' },
       inMinutes: { type: 'number', description: 'One-shot: fire this many minutes from now.' },
       inHours: { type: 'number', description: 'One-shot: fire this many hours from now.' },
@@ -613,7 +614,7 @@ class HeartbeatServer {
 
   private fireReminder(rem: Reminder): void {
     const sent = this.emitPush(
-      rem.message,
+      formatReminderText(rem, new Date(), AGENT_TIME_ZONE),
       { source: 'reminder', reminderId: rem.id, recurring: rem.everySeconds !== null },
       'reminder',
     );

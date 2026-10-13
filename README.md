@@ -14,6 +14,24 @@ itself configures its own schedule via three MCP tools:
 
 Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.
 
+## Reminders
+
+`reminder_add`, `reminder_list` and `reminder_cancel` manage one-shot and
+recurring reminders, persisted to
+`${HEARTBEAT_REMINDERS_FILE:-./heartbeat-reminders.json}`. A due reminder is a
+`push/event` with `origin.source: "reminder"` and `origin.reminderId`. Its text
+starts with a header saying it is a reminder, which reminder, and the current
+time, followed by the reminder's own message:
+
+```
+[reminder rem_…, set 2026-10-10T08:02:36-07:00 [America/Los_Angeles] · current time: 2026-10-12T20:02:36-07:00 [America/Los_Angeles]] <message>
+```
+
+A recurring reminder says `repeats every <n>s` where a one-shot says when it was
+set. Hosts typically store push content as-is and keep `origin` out of what the
+model reads, so without the header the message would arrive unattributed. A
+message that opens `Name: …` would then read as a chat line from that person.
+
 ## Silent mode
 
 A silent tick is an empty `push/event` carrying the host's silent-heartbeat
