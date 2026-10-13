@@ -50,18 +50,22 @@ function check(cond, label) {
   else { console.log(`  FAIL - ${label}`); failures++; }
 }
 
-// Collect reminder push events (ignore any ambient heartbeat pushes).
-const fires = []; // { text, id, at }
+// Collect reminder push events (ignore any ambient heartbeat pushes). Each
+// fire's text is `[reminder <id>, … · current time: …] <message>`; `body` is
+// the message after that header, `headerId` the id the header names.
+const HEADER = /^\[reminder (rem_[^,\s]+)(?:, set [^·]+|, repeats every \d+s)? · current time: [^\]]+\]\] /;
+const fires = []; // { text, body, headerId, id, at }
 function attach(session) {
   session.on('event', (ev) => {
     if (ev.kind !== 'push') return;
     const origin = ev.data?.origin ?? {};
     if (origin.source !== 'reminder') return;
     const text = ev.data?.payload?.content?.[0]?.text ?? '';
-    fires.push({ text, id: origin.reminderId, at: Date.now() });
+    const m = text.match(HEADER);
+    fires.push({ text, body: m ? text.slice(m[0].length) : null, headerId: m?.[1] ?? null, id: origin.reminderId, at: Date.now() });
   });
 }
-const count = (text) => fires.filter((f) => f.text === text).length;
+const count = (body) => fires.filter((f) => f.body === body).length;
 
 const env = { HEARTBEAT_REMINDERS_FILE: remindersFile, HEARTBEAT_CONFIG_FILE: configFile };
 let session = new HostSession({ command: 'node', args: [SERVER, '--stdio'], env, autoApprove: true });
@@ -100,6 +104,9 @@ try {
   check(count('ONE') === 0, 'no premature fire before due');
   await sleep(3500); // ~7.5s total > 5s due
   check(count('ONE') === 1, 'fired exactly once at due');
+  const one = fires.find((f) => f.body === 'ONE');
+  check(!!one && one.headerId === one.id, `the text names its reminder and the time (${one?.text ?? 'no fire'})`);
+  check(!!one && /^\[reminder \S+, set /.test(one.text), 'a one-shot says when it was set');
 
   // ── 2. recurring fires on cadence, then cancel silences it ──────────────
   console.log('2) recurring reminder fires on cadence; cancel silences it');
@@ -110,6 +117,8 @@ try {
   await sleep(12000); // expect fires at ~5s and ~10s
   const afterTwoIntervals = count('REC');
   check(afterTwoIntervals >= 2, `recurring fired on cadence (${afterTwoIntervals} fires in ~12s)`);
+  check(fires.some((f) => f.body === 'REC' && f.text.startsWith(`[reminder ${recId}, repeats every 5s · current time: `)),
+    'a recurring fire names its interval');
   await session.callTool('reminder_cancel', { id: recId });
   const atCancel = count('REC');
   await sleep(7000); // one more interval would have elapsed
