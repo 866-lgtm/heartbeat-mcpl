@@ -31,6 +31,8 @@ for (const time of [
   '2030-11-03T01:30:00-04:00',
   '2030-11-03T01:30:00-05:00',
   '2030-03-10T02:30:00-05:00',
+  '+275760-09-13T00:00:00Z',
+  '-271821-04-20T00:00:00Z',
 ]) {
   test(`explicit offset retains its instant: ${time}`, () => {
     assert.equal(parseReminderTime(time, 'America/New_York'), Date.parse(time));
@@ -92,6 +94,18 @@ test('a zero offset that Intl names as bare GMT is labelled +00:00', (t) => {
   );
 });
 
+test('an offset name Intl gives that this code cannot read is refused, never read as UTC', (t) => {
+  const formatToParts = Intl.DateTimeFormat.prototype.formatToParts;
+  t.mock.method(Intl.DateTimeFormat.prototype, 'formatToParts', function (this: Intl.DateTimeFormat, date?: Date | number) {
+    return formatToParts.call(this, date).map((part) => (
+      part.type === 'timeZoneName' ? { ...part, value: 'GMT+5' } : part));
+  });
+  assert.throws(
+    () => parseReminderTime('2030-07-15T09:00:00', 'Asia/Karachi'),
+    /Cannot read the UTC offset for Asia\/Karachi/,
+  );
+});
+
 test('a time a permanent offset decrease repeats is refused with both offsets', () => {
   assert.throws(
     () => parseReminderTime('2014-10-26T01:30:00', 'Europe/Moscow'),
@@ -124,10 +138,21 @@ test('a half-hour skipped interval is refused', () => {
   );
 });
 
-test('a date whose midnight the zone skips is refused', () => {
+test('a date alone whose midnight the zone skips is refused, naming that midnight', () => {
   assert.throws(
     () => parseReminderTime('2030-03-10', 'America/Havana'),
-    /does not exist in America\/Havana/,
+    (error: Error) => error.message.startsWith(
+      '"atIso" 2030-03-10 is read as 2030-03-10T00:00, which does not exist in America/Havana.',
+    ),
+  );
+});
+
+test('a date alone whose midnight the zone repeats is refused, naming that midnight and its offsets', () => {
+  assert.throws(
+    () => parseReminderTime('2030-11-03', 'America/Havana'),
+    (error: Error) => error.message.startsWith(
+      '"atIso" 2030-11-03 is read as 2030-11-03T00:00, which occurs twice in America/Havana.',
+    ) && error.message.includes('-04:00') && error.message.includes('-05:00'),
   );
 });
 

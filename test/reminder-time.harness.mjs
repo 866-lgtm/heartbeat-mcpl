@@ -36,11 +36,11 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
       enabled: ['heartbeat'], disabled: [],
     });
 
-    await t.test('the tool schema names its offset-less zone and DST rule', async () => {
+    await t.test('the tool schema names its offset-less zone, the midnight of a date alone, and its DST rule', async () => {
       const { tools } = await session.raw('tools/list', {});
       const description = tools.find((tool) => tool.name === 'reminder_add')
         .inputSchema.properties.atIso.description;
-      assert.match(description, /America\/New_York/);
+      assert.match(description, /America\/New_York\), and a date alone \(YYYY-MM-DD\) is midnight there;/);
       assert.match(description, /nonexistent or repeated/);
     });
 

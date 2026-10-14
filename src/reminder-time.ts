@@ -70,12 +70,14 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
     return Math.abs(instant) <= MAX_DATE_MS && offsetAt(instant).ms === offset;
   });
   if (candidates.length === 1) return wall - candidates[0][0];
+  // A date alone is read as its midnight. Name that time, since an offset can follow only a time.
+  const read = parts[4] === undefined ? `${atIso} is read as ${calendarDate}T00:00, which` : atIso;
   if (candidates.length > 1) {
     throw new Error(
-      `"atIso" ${atIso} occurs twice in ${timeZone}. Include ${candidates.map(([, label]) => label).join(' or ')} to choose the intended instant.`,
+      `"atIso" ${read} occurs twice in ${timeZone}. Include ${candidates.map(([, label]) => label).join(' or ')} to choose the intended instant.`,
     );
   }
   throw new Error(
-    `"atIso" ${atIso} does not exist in ${timeZone}. Choose an existing local time or give an explicit UTC offset.`,
+    `"atIso" ${read} does not exist in ${timeZone}. Choose an existing local time or give an explicit UTC offset.`,
   );
 }
