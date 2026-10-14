@@ -9,10 +9,11 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/reminder-text.test.ts && node --import tsx test/reminders.harness.mjs"
+    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/reminder-text.test.ts test/reminder-time.test.ts test/reminder-time.harness.mjs && node --import tsx test/reminders.harness.mjs"
   },
   "dependencies": {
-    "@animalabs/mcpl-core": "^0.2.1"
+    "@animalabs/mcpl-core": "^0.2.1",
+    "@js-temporal/polyfill": "^0.5.1"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
