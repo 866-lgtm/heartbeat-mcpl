@@ -17,13 +17,15 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   const invalid = `"atIso" is not a valid ISO-8601 timestamp: ${atIso}`;
   const parts = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-][\d:]+)?)?$/.exec(atIso);
   if (!parts) throw new Error(invalid);
-  // Parse the wall fields as UTC first. Unlike Date.UTC, this preserves years 0–99.
-  const wall = Date.parse(`${parts[1]}-${parts[2]}-${parts[3]}T${parts[4] ?? '00'}:${parts[5] ?? '00'}:${parts[6] ?? '00'}.${(parts[7] ?? '0').slice(0, 3).padEnd(3, '0')}Z`);
-  const date = new Date(wall);
-  if (!Number.isFinite(wall) || date.getUTCFullYear() !== +parts[1]
-    || date.getUTCMonth() + 1 !== +parts[2] || date.getUTCDate() !== +parts[3]) {
+  // Validate the date separately so ISO's 24:00 can advance a valid date,
+  // while February 30 cannot silently become March 2. ISO parsing preserves years 0–99.
+  const calendarDate = `${parts[1]}-${parts[2]}-${parts[3]}`;
+  const midnight = Date.parse(`${calendarDate}T00:00:00Z`);
+  if (!Number.isFinite(midnight) || new Date(midnight).getUTCDate() !== +parts[3]) {
     throw new Error(invalid);
   }
+  const wall = Date.parse(`${calendarDate}T${parts[4] ?? '00'}:${parts[5] ?? '00'}:${parts[6] ?? '00'}.${(parts[7] ?? '0').slice(0, 3).padEnd(3, '0')}Z`);
+  if (!Number.isFinite(wall)) throw new Error(invalid);
 
   if (parts[8]) {
     const instant = wall - offsetMilliseconds(parts[8]);

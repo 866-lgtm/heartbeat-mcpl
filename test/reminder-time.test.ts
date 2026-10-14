@@ -10,6 +10,8 @@ for (const [label, time, zone, expected] of [
   ['quarter-hour offset', '2030-07-15T09:00', 'Asia/Kathmandu', '2030-07-15T03:15:00Z'],
   ['UTC', '2030-07-15T09:00', 'UTC', '2030-07-15T09:00:00Z'],
   ['year below 100', '0042-07-15T09:00', 'UTC', '0042-07-15T09:00:00Z'],
+  ['end-of-day', '2030-07-15T24:00', 'America/New_York', '2030-07-16T04:00:00Z'],
+  ['end-of-month midnight', '2030-07-31T24:00:00', 'America/New_York', '2030-08-01T04:00:00Z'],
   ['historical offset seconds', '1890-07-15T09:00', 'Europe/Paris', '1890-07-15T08:50:39Z'],
   ['maximum Date boundary', '+275760-09-13T00:00', 'UTC', '+275760-09-13T00:00:00Z'],
   ['minimum Date boundary', '-271821-04-20T00:00', 'UTC', '-271821-04-20T00:00:00Z'],
