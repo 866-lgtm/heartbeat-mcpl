@@ -12,6 +12,18 @@ const harness = process.env.MCPL_HARNESS_SESSION
 const { HostSession } = await import(harness.href);
 const server = fileURLToPath(new URL('../dist/src/index.js', import.meta.url));
 
+// The instant of a New York wall time, as this runtime's tzdata places it. A reminder that is
+// saved must be in the future, where clock rules are projections, so these rows compute their
+// instants rather than fix them. Their dates are far from any clock change, so the offset at
+// the wall time read as UTC is the offset that applies.
+const newYork = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
+function inNewYork(wall) {
+  const asUtc = Date.parse(`${wall}Z`);
+  const name = newYork.formatToParts(new Date(asUtc)).find((part) => part.type === 'timeZoneName').value;
+  const [, sign, hours = '0', minutes = '0'] = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(name);
+  return asUtc - (sign === '-' ? -1 : 1) * (+hours * 60 + +minutes) * 60_000;
+}
+
 test('reminder_add uses the agent zone, not the process zone, and refuses ambiguous or invalid times before saving', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'heartbeat-zone-'));
   const reminders = join(dir, 'reminders.json');
@@ -45,8 +57,8 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
     });
 
     for (const [atIso, reason] of [
-      ['2099-11-01T01:30:00', /occurs twice.*America\/New_York.*-04:00.*-05:00/],
-      ['2099-03-08T02:30:00', /does not exist in America\/New_York/],
+      ['2024-11-03T01:30:00', /occurs twice.*America\/New_York.*-04:00.*-05:00/],
+      ['2024-03-10T02:30:00', /does not exist in America\/New_York/],
       ['2099-07-15T25:00:00Z', /valid ISO-8601/],
       ['2099-07-15T09:60:00-04:00', /valid ISO-8601/],
       ['2099-07-15T09:00:00+05:3000', /invalid UTC offset/],
@@ -62,17 +74,17 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
     }
 
     for (const [atIso, expected] of [
-      ['2099-11-01T09:00:00', '2099-11-01T14:00:00Z'],
-      ['2099-11-01T01:30:00-04:00', '2099-11-01T05:30:00Z'],
-      ['2099-11-01T01:30:00-05:00', '2099-11-01T06:30:00Z'],
-      ['2099-07-15', '2099-07-15T04:00:00Z'],
-      ['2099-07-15T09:00-04', '2099-07-15T13:00:00Z'],
+      ['2099-01-15T09:00:00', inNewYork('2099-01-15T09:00:00')],
+      ['2099-11-01T01:30:00-04:00', Date.parse('2099-11-01T05:30:00Z')],
+      ['2099-11-01T01:30:00-05:00', Date.parse('2099-11-01T06:30:00Z')],
+      ['2099-07-15', inNewYork('2099-07-15T00:00:00')],
+      ['2099-07-15T09:00-04', Date.parse('2099-07-15T13:00:00Z')],
     ]) {
       await t.test(`persist the exact instant for ${atIso}`, async () => {
         const result = await session.callTool('reminder_add', { message: atIso, atIso });
         assert.notEqual(result.isError, true, result.content[0].text);
         const reminder = JSON.parse(saved()).find((row) => row.message === atIso);
-        assert.equal(reminder.fireAt, Date.parse(expected));
+        assert.equal(reminder.fireAt, expected);
         await session.callTool('reminder_cancel', { id: reminder.id });
       });
     }

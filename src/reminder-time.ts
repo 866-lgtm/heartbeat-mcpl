@@ -53,7 +53,9 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   const offsetAt = (ms: number) => {
     const name = formatter.formatToParts(new Date(ms)).find((part) => part.type === 'timeZoneName')?.value;
     const offset = name ? offsetMilliseconds(name) : null;
-    if (!name || offset === null) throw new Error(`Cannot read the UTC offset for ${timeZone}.`);
+    if (!name || offset === null) {
+      throw new Error(`Cannot read the UTC offset for ${timeZone}. Give atIso an explicit UTC offset instead.`);
+    }
     return { ms: offset, label: name === 'GMT' ? '+00:00' : name.slice(3) };
   };
 
