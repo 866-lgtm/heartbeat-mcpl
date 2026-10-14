@@ -1,20 +1,28 @@
 const DAY_MS = 86_400_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
-function offsetMilliseconds(offset: string): number {
+/** What atIso accepts, for its refusals. */
+const accepted = (timeZone: string) => 'Use a calendar date YYYY-MM-DD (or an expanded year, ±YYYYYY-MM-DD),'
+  + ' optionally with a time THH:MM, THH:MM:SS or THH:MM:SS.fff, which can end in Z or a UTC offset ±hh, ±hh:mm or ±hhmm.'
+  + ` Without one, the time is read in ${timeZone}, and a date alone is midnight there.`;
+
+/** A UTC offset in milliseconds, or null if it isn't one: ±hh, ±hh:mm or ±hhmm,
+ *  with seconds (±hh:mm:ss, ±hhmmss) for the historical offsets Intl names, and
+ *  one separator style throughout. Intl's names carry a GMT prefix, and ICU 72 to
+ *  77 (Node 20.0 to 24.0) name the zero offset GMT alone. */
+function offsetMilliseconds(offset: string): number | null {
   if (/^(Z|GMT)$/i.test(offset)) return 0;
-  const match = /^(?:GMT)?([+-])(\d{2}):?(\d{2})(?::?(\d{2}))?$/.exec(offset);
-  if (!match || +match[2] > 23 || +match[3] > 59 || +(match[4] ?? 0) > 59) {
-    throw new Error(`Invalid UTC offset: ${offset}`);
-  }
+  const match = /^(?:GMT)?([+-])(\d{2})(?:(:?)(\d{2})(?:\3(\d{2}))?)?$/.exec(offset);
+  if (!match || +match[2] > 23 || +(match[4] ?? 0) > 59 || +(match[5] ?? 0) > 59) return null;
   return (match[1] === '-' ? -1 : 1)
-    * (+match[2] * 3600 + +match[3] * 60 + +(match[4] ?? 0)) * 1000;
+    * (+match[2] * 3600 + +(match[4] ?? 0) * 60 + +(match[5] ?? 0)) * 1000;
 }
 
 /** Read wall times in the agent zone, while explicit offsets name their own instant.
- *  A gap or repeated wall time requires the caller to choose a time or offset. */
+ *  A date alone is midnight in the agent zone. A gap or repeated wall time requires
+ *  the caller to choose a time or offset. */
 export function parseReminderTime(atIso: string, timeZone: string): number {
-  const invalid = `"atIso" is not a valid ISO-8601 timestamp: ${atIso}`;
+  const invalid = `"atIso" is not a valid ISO-8601 timestamp: ${atIso}. ${accepted(timeZone)}`;
   const parts = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-][\d:]+)?)?$/.exec(atIso);
   if (!parts) throw new Error(invalid);
   // Validate the date separately so ISO's 24:00 can advance a valid date,
@@ -28,16 +36,25 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   if (!Number.isFinite(wall)) throw new Error(invalid);
 
   if (parts[8]) {
-    const instant = wall - offsetMilliseconds(parts[8]);
-    if (Math.abs(instant) > MAX_DATE_MS) throw new Error(invalid);
+    const offset = offsetMilliseconds(parts[8]);
+    if (offset === null) {
+      throw new Error(`"atIso" has an invalid UTC offset ${parts[8]}: ${atIso}. ${accepted(timeZone)}`);
+    }
+    const instant = wall - offset;
+    if (Math.abs(instant) > MAX_DATE_MS) {
+      throw new Error(
+        `"atIso" ${atIso} is outside the times a reminder can hold, -271821-04-20T00:00:00Z to +275760-09-13T00:00:00Z.`,
+      );
+    }
     return instant;
   }
 
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' });
   const offsetAt = (ms: number) => {
     const name = formatter.formatToParts(new Date(ms)).find((part) => part.type === 'timeZoneName')?.value;
-    if (!name) throw new Error(`Cannot read the UTC offset for ${timeZone}.`);
-    return { ms: offsetMilliseconds(name), label: name === 'GMT' ? '+00:00' : name.slice(3) };
+    const offset = name ? offsetMilliseconds(name) : null;
+    if (!name || offset === null) throw new Error(`Cannot read the UTC offset for ${timeZone}.`);
+    return { ms: offset, label: name === 'GMT' ? '+00:00' : name.slice(3) };
   };
 
   // Offsets on either side cover ordinary times and both sides of a transition.

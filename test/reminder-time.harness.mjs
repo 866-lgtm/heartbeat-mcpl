@@ -12,14 +12,16 @@ const harness = process.env.MCPL_HARNESS_SESSION
 const { HostSession } = await import(harness.href);
 const server = fileURLToPath(new URL('../dist/src/index.js', import.meta.url));
 
-test('reminder_add uses the agent zone and refuses ambiguous wall times before saving', async (t) => {
+test('reminder_add uses the agent zone, not the process zone, and refuses ambiguous or invalid times before saving', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'heartbeat-zone-'));
   const reminders = join(dir, 'reminders.json');
   const session = new HostSession({
     command: 'node',
     args: [server, '--stdio'],
     env: {
-      TZ: 'UTC',
+      // A process zone unlike the agent's, so reading wall times in the
+      // process zone shows on a UTC runner too.
+      TZ: 'Asia/Tokyo',
       AGENT_TIMEZONE: 'America/New_York',
       HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'),
       HEARTBEAT_REMINDERS_FILE: reminders,
@@ -45,6 +47,10 @@ test('reminder_add uses the agent zone and refuses ambiguous wall times before s
     for (const [atIso, reason] of [
       ['2099-11-01T01:30:00', /occurs twice.*America\/New_York.*-04:00.*-05:00/],
       ['2099-03-08T02:30:00', /does not exist in America\/New_York/],
+      ['2099-07-15T25:00:00Z', /valid ISO-8601/],
+      ['2099-07-15T09:60:00-04:00', /valid ISO-8601/],
+      ['2099-07-15T09:00:00+05:3000', /invalid UTC offset/],
+      ['+275760-09-13T00:00:00-01:00', /outside the times a reminder can hold/],
     ]) {
       await t.test(`reject ${atIso} without changing persisted reminders`, async () => {
         const before = saved();
@@ -59,6 +65,8 @@ test('reminder_add uses the agent zone and refuses ambiguous wall times before s
       ['2099-11-01T09:00:00', '2099-11-01T14:00:00Z'],
       ['2099-11-01T01:30:00-04:00', '2099-11-01T05:30:00Z'],
       ['2099-11-01T01:30:00-05:00', '2099-11-01T06:30:00Z'],
+      ['2099-07-15', '2099-07-15T04:00:00Z'],
+      ['2099-07-15T09:00-04', '2099-07-15T13:00:00Z'],
     ]) {
       await t.test(`persist the exact instant for ${atIso}`, async () => {
         const result = await session.callTool('reminder_add', { message: atIso, atIso });
