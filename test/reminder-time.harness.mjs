@@ -82,7 +82,7 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
       [{ inSeconds: 1e306 }, /"inSeconds" 1e\+306 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
       [{ everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its first fire past .* Give a shorter interval\.$/],
       [{ inSeconds: 5, everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its second fire past .* Give a shorter interval\.$/],
-      [{ inSeconds: 1e13, everySeconds: 60 }, /"inSeconds" 10000000000000 puts its first fire past .* Give a shorter delay\.$/],
+      [{ inSeconds: 1e13, everySeconds: 60 }, /"inSeconds" 10000000000000 puts its first fire past .* Give a shorter delay, or an atIso before then\.$/],
     ]) {
       await t.test(`refuse ${JSON.stringify(args)} without saving it, and keep listing`, async () => {
         const before = saved();
