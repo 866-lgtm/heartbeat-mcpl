@@ -137,12 +137,18 @@ test('every argument is applied, or the call is refused and changes nothing', as
     // Cancelled well before it would fire, so the file holds still for the tests after.
     const soon = await add({ inSeconds: 4 }, 4000);
     assert.equal((await call('reminder_cancel', { id: soon.id })).isError, false);
-    const now = await add({ inSeconds: 0 }, 0);
-    for (const deadline = Date.now() + 10_000; !fired.includes(now.id) && Date.now() < deadline;) {
+    // With no delay it fires on the server's next tick, which can come before
+    // the file could be read after the reply, so its id comes from the reply.
+    const zero = await call('reminder_add', { message: 'x', inSeconds: 0 });
+    assert.equal(zero.isError, false, zero.text);
+    const zeroId = /^Reminder (rem_\S+) set/.exec(zero.text)?.[1];
+    for (const deadline = Date.now() + 10_000; !fired.includes(zeroId) && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    assert.deepEqual(fired, [now.id], 'the reminder with no delay fires, and only it');
-    assert.equal(saved().some((r) => r.id === now.id), false, 'and is gone once it has');
+    assert.deepEqual(fired, [zeroId], 'the reminder with no delay fires, and only it');
+    // The server saves just after it pushes, so ask it first: its answer comes after the save.
+    assert.doesNotMatch((await call('reminder_list', {})).text, new RegExp(zeroId), 'and is gone once it has');
+    assert.equal(saved().some((r) => r.id === zeroId), false, 'from the file too');
   });
 
   await t.test('a repeating reminder at its floor is set, and a fraction is kept', async () => {
