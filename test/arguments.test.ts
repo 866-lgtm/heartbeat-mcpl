@@ -64,18 +64,13 @@ test('a key like nothing here is ignored, unless it is all a tool that takes arg
     problems: ['It doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".'],
     ignored: [],
   });
-  // A key that holds an argument's name is another name, usually an extra that explains it, but it is what the result suggests.
+  // A key that holds an argument's name is another name, usually an extra that explains it.
   assert.deepEqual(checkArguments(configure, { paused: true, pausedReason: 'quiet' }, tools), { problems: [], ignored: ['pausedReason'] });
-  assert.deepEqual(checkArguments(configure, { pausedReason: 'quiet' }, tools).problems,
-    ['It doesn\'t take "pausedReason"; the closest it takes is "paused".']);
 });
 
-test('the note on ignored keys suggests what each may have meant, or names every argument', () => {
-  assert.equal(ignoredNote(configure, ['pausedReason']),
-    'configure ignored "pausedReason", which it doesn\'t take; the closest it takes is "paused".');
+test('the note on ignored keys names them and every argument the tool takes, applied or refused', () => {
   assert.equal(ignoredNote(configure, ['pausedReason', 'reason']),
-    'configure ignored "pausedReason" and "reason", which it doesn\'t take; the closest to "pausedReason" it takes is "paused", '
-      + 'and it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
+    'configure ignored "pausedReason" and "reason", which it doesn\'t take; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
   assert.equal(ignoredNote(configure, ['reason'], true),
     'It also doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
 });

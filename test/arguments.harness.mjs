@@ -113,10 +113,10 @@ test('every argument is applied, or the call is refused and changes nothing', as
     assert.equal(part.isError, true, part.text);
     assert.equal(part.text, 'heartbeat_configure: nothing was changed. "mode" isn\'t an argument heartbeat_configure takes; the closest is "deliveryMode".');
     assert.equal(stored(config), before);
-    // A key that holds an argument's name is another name: ignored, and the note says what it may have meant.
+    // A key that holds an argument's name is another name, usually an extra: ignored and named.
     const extra = await call('heartbeat_configure', { paused: false, pausedReason: 'testing' });
     assert.equal(extra.isError, false, extra.text);
-    assert.match(extra.text, /^Updated\. Heartbeat ACTIVE .* heartbeat_configure ignored "pausedReason", which it doesn't take; the closest it takes is "paused"\.$/);
+    assert.match(extra.text, /^Updated\. Heartbeat ACTIVE .* heartbeat_configure ignored "pausedReason", which it doesn't take; it takes "intervalSeconds"/);
   });
 
   await t.test('another tool\'s argument is refused where it would do nothing', async () => {

@@ -69,7 +69,7 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
     }
   }
   if (ignored.length > 0 && ignored.length === Object.keys(args).length && names.length > 0) {
-    problems.unshift(`It doesn't take ${andList(ignored)}; ${meant(tool, ignored)}.`);
+    problems.unshift(`It doesn't take ${andList(ignored)}; ${takes(tool)}.`);
     ignored.length = 0;
   }
   for (const key of required) {
@@ -83,20 +83,8 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
  *  that it doesn't take them either. */
 export function ignoredNote(tool: ToolSchema, ignored: readonly string[], refused = false): string {
   return refused
-    ? `It also doesn't take ${andList(ignored)}; ${meant(tool, ignored)}.`
-    : `${tool.name} ignored ${andList(ignored)}, which it doesn't take; ${meant(tool, ignored)}.`;
-}
-
-/** What the agent may have meant by keys the tool doesn't take, none of
- *  them a slip: the names closestNames still finds for each, such as
- *  "paused" for "pausedReason", and every name it takes when one has none. */
-function meant(tool: ToolSchema, keys: readonly string[]): string {
-  const names = Object.keys(tool.inputSchema.properties);
-  const closest = keys.flatMap((key) => {
-    const near = closestNames(key, names);
-    return near.length ? [`the closest ${keys.length > 1 ? `to "${key}" ` : ''}it takes is ${orList(near)}`] : [];
-  });
-  return [...closest, ...(closest.length < keys.length ? [takes(tool)] : [])].join(', and ');
+    ? `It also doesn't take ${andList(ignored)}; ${takes(tool)}.`
+    : `${tool.name} ignored ${andList(ignored)}, which it doesn't take; ${takes(tool)}.`;
 }
 
 /** "it takes a, b and c", or that it takes none. */
@@ -186,7 +174,7 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
 
 /**
  * The names someone most likely meant, when the one they gave matches none:
- * for a refusal's or a note's "the closest is". This, isNearMiss, noiseLimit
+ * for a refusal's "the closest is". This, isNearMiss, noiseLimit
  * and editDistance are agent-framework's closest-names helper
  * (src/closest-names.ts), copied unchanged rather than imported, since it
  * isn't published, so the house's tools agree on what counts as a slip and
