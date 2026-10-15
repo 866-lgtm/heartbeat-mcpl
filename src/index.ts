@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { formatReminderText } from './reminder-text.js';
+import { parseReminderTime } from './reminder-time.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
 } from './mcpl05.js';
@@ -147,7 +148,7 @@ const toolDefinitions = [
       inSeconds: { type: 'number', description: 'One-shot: fire this many seconds from now.' },
       inMinutes: { type: 'number', description: 'One-shot: fire this many minutes from now.' },
       inHours: { type: 'number', description: 'One-shot: fire this many hours from now.' },
-      atIso: { type: 'string', description: 'One-shot: fire at this absolute ISO-8601 time (e.g. 2026-07-01T09:00:00Z). Past times fire immediately.' },
+      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). Past times fire immediately.` },
       everySeconds: { type: 'number', description: 'Recurring: repeat every N seconds (min 5).' },
       everyMinutes: { type: 'number', description: 'Recurring: repeat every N minutes.' },
       everyHours: { type: 'number', description: 'Recurring: repeat every N hours.' },
@@ -523,9 +524,12 @@ class HeartbeatServer {
     } else if (delay !== null) {
       fireAt = now + delay * 1000;
     } else if (typeof args.atIso === 'string') {
-      const t = Date.parse(args.atIso);
-      if (Number.isNaN(t)) return this.text(`reminder_add: "atIso" is not a valid ISO-8601 timestamp: ${args.atIso}`, true);
-      fireAt = t; // a past time is allowed — it fires on the next tick
+      try {
+        fireAt = parseReminderTime(args.atIso, AGENT_TIME_ZONE);
+      } catch (error) {
+        return this.text(`reminder_add: ${(error as Error).message}`, true);
+      }
+      // A past time is allowed: it fires on the next tick.
     }
 
     if (fireAt === null) {
