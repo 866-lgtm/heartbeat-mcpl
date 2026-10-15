@@ -25,6 +25,7 @@ import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { formatReminderText } from './reminder-text.js';
 import { parseReminderTime } from './reminder-time.js';
+import { callAt } from './timer.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
 } from './mcpl05.js';
@@ -37,9 +38,6 @@ const CONFIG_PATH = process.env.HEARTBEAT_CONFIG_FILE ?? './heartbeat-config.jso
 const REMINDERS_PATH = process.env.HEARTBEAT_REMINDERS_FILE ?? './heartbeat-reminders.json';
 const FS_NAME = 'heartbeat';
 const AGENT_TIME_ZONE = resolveAgentTimeZone();
-// setTimeout overflows past 2^31-1 ms (~24.8 days) and fires immediately; clamp
-// long waits and re-check on wake so far-future reminders still fire on time.
-const MAX_TIMEOUT_MS = 2_147_483_647;
 // Floor on any reminder delay/interval — keeps a runaway "every 0s" from
 // spamming the agent, while still allowing brisk test cadences.
 const MIN_REMINDER_SECONDS = 5;
@@ -71,6 +69,14 @@ function loadConfig(): HeartbeatConfig {
     if (existsSync(CONFIG_PATH)) {
       const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
       if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
+      // heartbeat_configure saves 60 seconds or more, and an infinite interval
+      // as null. Any other value falls back to the default: some, such as null,
+      // zero or a negative number, would fire the heartbeat about every
+      // millisecond.
+      if (!(Number.isFinite(merged.intervalSeconds) && merged.intervalSeconds >= 60)) {
+        log(`config intervalSeconds ${JSON.stringify(merged.intervalSeconds)} is not a number of seconds, 60 or more; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
+        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+      }
       return merged;
     }
   } catch (e) { log('config read failed:', (e as Error).message); }
@@ -168,8 +174,9 @@ class HeartbeatServer {
   private conn: McplConnection | null = null;
   private config = loadConfig();
   private reminders = loadReminders();
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  private reminderTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cancel the pending ambient heartbeat or reminder wake (see callAt). */
+  private cancelHeartbeat: (() => void) | null = null;
+  private cancelReminderWake: (() => void) | null = null;
   private nextFireAt = 0;
   private mcplEnabled = false;
   /** The effective grant (§5.4). Empty until the host sends one — there is no
@@ -198,8 +205,8 @@ class HeartbeatServer {
     } catch (e) {
       if ((e as Error).name !== 'ConnectionClosedError') log('connection error:', e);
     }
-    if (this.timer) clearTimeout(this.timer);
-    if (this.reminderTimer) clearTimeout(this.reminderTimer);
+    this.cancelHeartbeat?.();
+    this.cancelReminderWake?.();
     this.conn = null;
   }
 
@@ -392,11 +399,11 @@ class HeartbeatServer {
   // ── Ambient heartbeat ──
 
   private reschedule(): void {
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this.cancelHeartbeat?.();
+    this.cancelHeartbeat = null;
     if (this.config.paused) { this.nextFireAt = 0; log('paused; no next fire scheduled'); return; }
-    const ms = this.config.intervalSeconds * 1000;
-    this.nextFireAt = Date.now() + ms;
-    this.timer = setTimeout(() => { this.fire('schedule'); this.reschedule(); }, ms);
+    this.nextFireAt = Date.now() + this.config.intervalSeconds * 1000;
+    this.cancelHeartbeat = callAt(this.nextFireAt, () => { this.fire('schedule'); this.reschedule(); });
     log(`next heartbeat in ${this.config.intervalSeconds}s`);
   }
 
@@ -580,16 +587,14 @@ class HeartbeatServer {
     return this.text(`Cancelled ${id}. ${this.reminders.length} reminder(s) remain.`);
   }
 
-  /** (Re)arm a single timer for the earliest due reminder. One timer covers all
-   *  reminders; it re-arms after each fire. Clamped to MAX_TIMEOUT_MS so a
-   *  far-future reminder doesn't overflow setTimeout (it just wakes to re-check). */
+  /** (Re)arm a single wake for the earliest due reminder. One wake covers all
+   *  reminders; it re-arms after each fire. */
   private scheduleReminders(): void {
-    if (this.reminderTimer) { clearTimeout(this.reminderTimer); this.reminderTimer = null; }
+    this.cancelReminderWake?.();
+    this.cancelReminderWake = null;
     if (this.reminders.length === 0) return;
-    const now = Date.now();
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
-    const delay = Math.max(0, Math.min(soonest - now, MAX_TIMEOUT_MS));
-    this.reminderTimer = setTimeout(() => this.processDueReminders(), delay);
+    this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
   }
 
   /** Fire every reminder that is due, drop one-shots, advance recurring ones to
