@@ -69,13 +69,20 @@ function loadConfig(): HeartbeatConfig {
     if (existsSync(CONFIG_PATH)) {
       const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
       if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
-      // A stored interval means what heartbeat_configure would have made of it:
-      // under 60 s is raised to 60 (Math.max(60, …)), and one that isn't a
-      // finite number, such as the null it saves for an infinite interval,
-      // falls back to the default. Before, null, zero or a negative number
-      // fired the heartbeat about every millisecond.
+      // A stored interval means what heartbeat_configure would have made of it.
+      // It saves an infinite interval as null, so null means "never": it
+      // loads paused, at the default for when it's resumed. Under 60 s is
+      // raised to 60 (Math.max(60, …)). Anything else that isn't a finite
+      // number falls back to the default, since its owner wanted some
+      // interval, and a pause would stop the wake that lets the agent notice.
+      // Before, null, zero or a negative number fired the heartbeat about
+      // every millisecond.
       const stored: unknown = merged.intervalSeconds;
-      if (typeof stored !== 'number' || !Number.isFinite(stored)) {
+      if (stored === null) {
+        log(`config intervalSeconds is null, as heartbeat_configure saves an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+        merged.paused = true;
+      } else if (typeof stored !== 'number' || !Number.isFinite(stored)) {
         log(`config intervalSeconds ${JSON.stringify(stored)} is not a number of seconds; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
         merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
       } else if (stored < 60) {
