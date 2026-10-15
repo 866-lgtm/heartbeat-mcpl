@@ -23,12 +23,15 @@ const POLICY = {
   effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: [],
   enabled: ['heartbeat'], disabled: [],
 };
-const NOT_READY = 'No wake can be delivered now: no valid featureSets/update Request in force (none yet, or the last was '
-  + 'malformed); capability-dependent behavior is unavailable until one arrives (§5.3). A reminder that falls due waits until one can.';
-const DENIED = 'No wake can be delivered now: capability not granted: pushEvents (§5.4 — absence is denial). '
-  + 'A reminder that falls due waits until one can.';
-const PRE_05 = 'No wake can be delivered on this host: host sent featureSets/update only as a Notification, which cannot '
-  + 'establish ready state (§6.7), so no wake is delivered on this connection. No reminder will fire here.';
+// What reminder_list and reminder_add say while no wake can be delivered.
+const ASK = " If that doesn't change, ask whoever runs this host.";
+const NOT_READY_REASON = "the host hasn't finished setting this server up, or its last settings message was malformed";
+const NOT_READY = `No wake can be delivered now, because ${NOT_READY_REASON}. A reminder that falls due waits until one can.${ASK}`;
+const NOT_READY_ONE = `No wake can be delivered now, because ${NOT_READY_REASON}, so it waits until one can.${ASK}`;
+const DENIED = "No wake can be delivered now, because the host hasn't granted this server what its wakes need. "
+  + `A reminder that falls due waits until one can.${ASK}`;
+const PRE_05 = "No wake can be delivered on this host, because the host set this server up in an older form that can't turn "
+  + "wakes on, so no reminder will fire here. Calling again won't change that; ask whoever runs this host if you need wakes.";
 
 /** A server on a reminders file holding `rows`, with every reminder push it sends, and when it arrived. */
 async function start(t, rows = []) {
@@ -82,7 +85,7 @@ test('an overdue reminder waits until its wake can be delivered, then fires once
   const added = (await session.callTool('reminder_add', { message: 'NEW', inSeconds: 1 })).content[0].text;
   const addedId = /Reminder (rem_\S+) set/.exec(added)?.[1];
   assert.ok(addedId, added);
-  assert.ok(added.endsWith(` ${NOT_READY.replace('A reminder that falls due', 'It')}`), `reminder_add says it waits: ${added}`);
+  assert.ok(added.endsWith(` ${NOT_READY_ONE}`), `reminder_add says it waits: ${added}`);
   await session.callTool('reminder_cancel', { id: 'rem_doomed' });
   await session.raw('featureSets/update', { ...POLICY, effectiveCapabilities: ['tools'] });
   await sleep(2000);

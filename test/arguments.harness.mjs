@@ -264,7 +264,7 @@ test('every argument is applied, or the call is refused and changes nothing', as
     // An atIso that can't be read still sets the first fire, so the interval isn't blamed for one.
     const unread = await call('reminder_add', { message: 'x', atIso: 'not a time', everySeconds: 1e13 });
     assert.equal(unread.isError, true, unread.text);
-    assert.match(unread.text, /"atIso" is not a valid ISO-8601 timestamp: not a time\./);
+    assert.match(unread.text, /"atIso" "not a time" isn't a time this tool reads\./);
     assert.doesNotMatch(unread.text, /first fire/);
     // So does a delay that can't be read.
     const negative = await call('reminder_add', { message: 'x', inMinutes: -5, everySeconds: 1e13 });
