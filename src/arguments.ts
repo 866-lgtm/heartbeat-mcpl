@@ -46,8 +46,10 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
     if (!Object.hasOwn(properties, key)) {
       const others = tools.filter((other) => other !== tool);
       const theirs = [...new Set(others.flatMap((other) => Object.keys(other.inputSchema.properties)))];
-      if (names.some((name) => isNearMiss(key, name))) {
-        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, names))}.`);
+      const slips = names.filter((name) => isNearMiss(key, name));
+      if (slips.length > 0) {
+        // Suggest only the names the slip was decided on, ranked, so the suggestion never names another.
+        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, slips))}.`);
       } else if (theirs.some((name) => isNearMiss(key, name))) {
         const meant = closestNames(key, theirs.filter((name) => isNearMiss(key, name)), 1)[0];
         const owners = andNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`));
@@ -193,10 +195,13 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
  * Case is ignored. A candidate that the name matches as a whole `--` segment
  * ("ls" for "workspace--ls"), then one that starts with it or that it starts
  * with, then one that contains it or that it contains, ranks ahead of one
- * that is only a few edits away. The prefix and substring matches need three
- * characters on the shorter side, since a letter or two is in nearly every
- * name. Past the edits isNearMiss allows, a candidate is noise, so a name
- * close to nothing gets nothing back.
+ * that is only a few edits away, however many edits those matches take. The
+ * prefix and substring matches need three characters on the shorter side,
+ * since a letter or two is in nearly every name. A candidate that matches in
+ * none of those ways counts only within the edits noiseLimit allows, and past
+ * that it's noise. So a name that is part of no candidate, holds none and is
+ * close to none gets nothing back, and a name in a crowded namespace doesn't
+ * get its neighbours (`workspace--write` for `workspace--read`).
  */
 export function closestNames(name: string, candidates: readonly string[], max = 2): string[] {
   const wanted = name.toLowerCase();

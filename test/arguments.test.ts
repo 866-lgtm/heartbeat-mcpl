@@ -44,6 +44,13 @@ test('a near miss, or another tool\'s argument or a near miss of one, is a probl
     ['"interval" isn\'t an argument configure takes; the closest is "intervalSeconds" or "intervalMinutes".']);
   assert.deepEqual(checkArguments(configure, { Seconds: 30 }, tools).problems,
     ['"Seconds" isn\'t an argument configure takes; the closest is "intervalSeconds".']);
+  // The suggestion names only what the slip was decided on: "channel_id" holds "channel", but is a slip for "channelId".
+  const send: ToolSchema = { name: 'send', inputSchema: { properties: {
+    channel: { type: 'string', description: 'A channel.' },
+    channelId: { type: 'string', description: 'A channel id.' },
+  } } };
+  assert.deepEqual(checkArguments(send, { channel_id: 'c1' }, [send]).problems,
+    ['"channel_id" isn\'t an argument send takes; the closest is "channelId".']);
   assert.deepEqual(checkArguments(list, { id: 'rem_1' }, tools).problems,
     ['"id" is cancel\'s argument, not list\'s; list takes no arguments.']);
   assert.deepEqual(checkArguments(list, { Id: 'rem_1' }, tools).problems,
