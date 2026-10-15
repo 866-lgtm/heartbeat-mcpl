@@ -20,7 +20,7 @@ import { McplConnection, method } from '@animalabs/mcpl-core';
 import type {
   McplInitializeParams, PushEventParams, JsonRpcId,
 } from '@animalabs/mcpl-core';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
@@ -30,6 +30,7 @@ import { callAt } from './timer.js';
 import { HOST_GONE, heldNote, wakeBlocked } from './wake-blocked.js';
 import type { WakeBlocked } from './wake-blocked.js';
 import { describeThrown, noSuchTool, thrownForLog, toolThrew } from './call-texts.js';
+import { readStored, unsavedNote } from './stored-file.js';
 import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
@@ -80,45 +81,51 @@ interface Reminder {
 function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
 /** The silent-mode fallback is explained once per process, not on every tick. */
 let silentFallbackExplained = false;
+/** Why the config file, or the reminders file, mustn't be saved over until a
+ *  restart reads it again (see stored-file.ts), or null while it may be. */
+let configUnsaveable: string | null = null;
+let remindersUnsaveable: string | null = null;
+const isObject = (x: unknown) => typeof x === 'object' && x !== null && !Array.isArray(x);
+
 function loadConfig(): HeartbeatConfig {
-  try {
-    if (existsSync(CONFIG_PATH)) {
-      const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
-      if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
-      // A stored interval means what heartbeat_configure made of it when it
-      // was saved. Earlier versions saved an infinite interval as null, so
-      // null means "never": it loads paused, at the default for when it's
-      // resumed. They raised one under 60 s to 60 (Math.max(60, …)), so that
-      // is how it loads; heartbeat_configure now refuses it instead. Anything
-      // else that isn't a finite number falls back to the default, since its
-      // owner wanted some interval, and a pause would stop the wake that lets
-      // the agent notice. Before, null, zero or a negative number fired the
-      // heartbeat about every millisecond.
-      const stored: unknown = merged.intervalSeconds;
-      if (stored === null) {
-        log(`config intervalSeconds is null, as earlier versions of heartbeat_configure saved an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
-        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
-        merged.paused = true;
-      } else if (typeof stored !== 'number' || !Number.isFinite(stored)) {
-        log(`config intervalSeconds ${JSON.stringify(stored)} is not a number of seconds; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
-        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
-      } else if (stored < 60) {
-        log(`config intervalSeconds ${stored} is under the 60-second floor; using 60s`);
-        merged.intervalSeconds = 60;
-      } else if (!canHoldTime(Date.now() + stored * 1000)) {
-        // Earlier versions saved an interval as given, however long. One whose
-        // next heartbeat falls past the last time a Date holds meant "never",
-        // as null does, and would otherwise be armed at Infinity.
-        log(`config intervalSeconds ${stored} puts the next heartbeat past ${LAST_REMINDER_TIME}; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
-        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
-        merged.paused = true;
-      }
-      return merged;
-    }
-  } catch (e) { log('config read failed:', (e as Error).message); }
-  return { ...DEFAULT_CONFIG };
+  const file = readStored(CONFIG_PATH, 'config', isObject);
+  if (file.note) log(file.note);
+  configUnsaveable = file.unsaveable;
+  if (file.value === undefined) return { ...DEFAULT_CONFIG };
+  const merged = { ...DEFAULT_CONFIG, ...(file.value as object) } as HeartbeatConfig;
+  if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
+  // A stored interval means what heartbeat_configure made of it when it
+  // was saved. Earlier versions saved an infinite interval as null, so
+  // null means "never": it loads paused, at the default for when it's
+  // resumed. They raised one under 60 s to 60 (Math.max(60, …)), so that
+  // is how it loads; heartbeat_configure now refuses it instead. Anything
+  // else that isn't a finite number falls back to the default, since its
+  // owner wanted some interval, and a pause would stop the wake that lets
+  // the agent notice. Before, null, zero or a negative number fired the
+  // heartbeat about every millisecond.
+  const stored: unknown = merged.intervalSeconds;
+  if (stored === null) {
+    log(`config intervalSeconds is null, as earlier versions of heartbeat_configure saved an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+    merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+    merged.paused = true;
+  } else if (typeof stored !== 'number' || !Number.isFinite(stored)) {
+    log(`config intervalSeconds ${JSON.stringify(stored)} is not a number of seconds; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
+    merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+  } else if (stored < 60) {
+    log(`config intervalSeconds ${stored} is under the 60-second floor; using 60s`);
+    merged.intervalSeconds = 60;
+  } else if (!canHoldTime(Date.now() + stored * 1000)) {
+    // Earlier versions saved an interval as given, however long. One whose
+    // next heartbeat falls past the last time a Date holds meant "never",
+    // as null does, and would otherwise be armed at Infinity.
+    log(`config intervalSeconds ${stored} puts the next heartbeat past ${LAST_REMINDER_TIME}; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+    merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+    merged.paused = true;
+  }
+  return merged;
 }
 function saveConfig(c: HeartbeatConfig): void {
+  if (configUnsaveable) return;
   try { writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2)); }
   catch (e) { log('config write failed:', (e as Error).message); }
 }
@@ -138,43 +145,47 @@ function isStoredReminder(x: unknown): x is StoredReminder {
     && (r.everySeconds === null || typeof r.everySeconds === 'number');
 }
 function loadReminders(): Reminder[] {
-  try {
-    if (existsSync(REMINDERS_PATH)) {
-      const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
-      if (Array.isArray(parsed)) {
-        // A stored time outside a Date's range can't be listed, since formatting
-        // it throws, and that took reminder_list down for every reminder. One
-        // past the range, or the null JSON wrote for one too large for a number,
-        // could never fire; reminder_add saved such times before it checked
-        // them. One below the range is dropped the same way. The log line keeps
-        // the row, message and all, since the next save leaves it out of the file.
-        const holdable = parsed.filter(isStoredReminder).filter((r): r is Reminder => {
-          if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
-          log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
-            + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`);
-          return false;
-        });
-        // A stored interval means what reminder_add made of it when it was
-        // saved. Earlier versions read 0 or less as no interval and raised one
-        // under MIN_REMINDER_SECONDS to it, so a stored one loads as a one-off
-        // or as the floor; reminder_add now refuses both. Before, 0 or less
-        // fired again at once on every advance, about every millisecond.
-        return holdable.map((r) => {
-          if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
-          if (r.everySeconds <= 0) {
-            log(`reminder ${r.id}: stored interval ${r.everySeconds}s is no interval; it fires once`);
-            return { ...r, everySeconds: null };
-          }
-          log(`reminder ${r.id}: stored interval ${r.everySeconds}s is under the ${MIN_REMINDER_SECONDS}-second floor; using ${MIN_REMINDER_SECONDS}s`);
-          return { ...r, everySeconds: MIN_REMINDER_SECONDS };
-        });
-      }
-      log('reminders file is not an array; ignoring');
+  const file = readStored(REMINDERS_PATH, 'reminders', Array.isArray);
+  if (file.note) log(file.note);
+  remindersUnsaveable = file.unsaveable;
+  if (!Array.isArray(file.value)) return [];
+  const parsed: unknown[] = file.value;
+  // A row that isn't a reminder this server wrote can't be loaded. The log
+  // line keeps it whole, since the next save leaves it out of the file.
+  const rows = parsed.filter((x): x is StoredReminder => {
+    if (isStoredReminder(x)) return true;
+    log(`dropped reminder ${JSON.stringify(x)}: it isn't a reminder this server writes`);
+    return false;
+  });
+  // A stored time outside a Date's range can't be listed, since formatting
+  // it throws, and that took reminder_list down for every reminder. One
+  // past the range, or the null JSON wrote for one too large for a number,
+  // could never fire; reminder_add saved such times before it checked
+  // them. One below the range is dropped the same way. The log line keeps
+  // the row, message and all, since the next save leaves it out of the file.
+  const holdable = rows.filter((r): r is Reminder => {
+    if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
+    log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+      + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`);
+    return false;
+  });
+  // A stored interval means what reminder_add made of it when it was
+  // saved. Earlier versions read 0 or less as no interval and raised one
+  // under MIN_REMINDER_SECONDS to it, so a stored one loads as a one-off
+  // or as the floor; reminder_add now refuses both. Before, 0 or less
+  // fired again at once on every advance, about every millisecond.
+  return holdable.map((r) => {
+    if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
+    if (r.everySeconds <= 0) {
+      log(`reminder ${r.id}: stored interval ${r.everySeconds}s is no interval; it fires once`);
+      return { ...r, everySeconds: null };
     }
-  } catch (e) { log('reminders read failed:', (e as Error).message); }
-  return [];
+    log(`reminder ${r.id}: stored interval ${r.everySeconds}s is under the ${MIN_REMINDER_SECONDS}-second floor; using ${MIN_REMINDER_SECONDS}s`);
+    return { ...r, everySeconds: MIN_REMINDER_SECONDS };
+  });
 }
 function saveReminders(reminders: Reminder[]): void {
+  if (remindersUnsaveable) return;
   try { writeFileSync(REMINDERS_PATH, JSON.stringify(reminders, null, 2)); }
   catch (e) { log('reminders write failed:', (e as Error).message); }
 }
@@ -552,7 +563,9 @@ class HeartbeatServer {
     if (args.deliveryMode === 'message' || args.deliveryMode === 'silent') { c.deliveryMode = args.deliveryMode; changed = true; }
     if (typeof args.message === 'string') { c.message = args.message; changed = true; }
     if (changed) { saveConfig(c); this.reschedule(); }
-    return this.text((changed ? 'Updated. ' : 'No changes. ') + this.statusText());
+    // The note comes before the status, whose last field closes a quote.
+    return this.text((changed ? 'Updated. ' : 'No changes. ')
+      + (changed && configUnsaveable ? `${unsavedNote('config')} ` : '') + this.statusText());
   }
 
   // ── Ambient heartbeat ──
@@ -718,7 +731,9 @@ class HeartbeatServer {
     // The time given is when it falls due; while no wake can be delivered, the
     // note says what happens then.
     const blocked = this.pushBlocked();
-    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? `. ${heldNote(blocked, true)}` : ''}`);
+    const notes = [blocked ? heldNote(blocked, true) : null, remindersUnsaveable ? unsavedNote('reminders') : null]
+      .filter((note): note is string => note !== null);
+    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${notes.length > 0 ? `. ${notes.join(' ')}` : ''}`);
   }
 
   private describeReminder(rem: Reminder, now: number): string {
@@ -760,7 +775,8 @@ class HeartbeatServer {
     saveReminders(this.reminders);
     this.retryRefused();
     log(`cancelled reminder ${id}`);
-    return this.text(`Cancelled ${id}. ${this.reminders.length} reminder(s) remain.`);
+    return this.text(`Cancelled ${id}. ${this.reminders.length} reminder(s) remain.`
+      + (remindersUnsaveable ? ` ${unsavedNote('reminders')}` : ''));
   }
 
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all

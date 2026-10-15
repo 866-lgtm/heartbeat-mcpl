@@ -15,6 +15,15 @@ itself configures its own schedule via three MCP tools:
 
 Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.
 
+No save loses this file or the reminders file when the server can't use it.
+One that can't be read at all is left as it is, and nothing is saved over
+it until a restart reads it again: the server runs on what it holds in
+memory meanwhile, and a call that changes what it holds is told the change
+won't last past a restart. One that reads but isn't what the server writes,
+such as a file a crash tore during a save, is copied aside first, to
+`<file>.unreadable-<hash>`, and the server starts without it. The log names
+the copy.
+
 Every argument a tool call sends is applied, or the call is refused, changes
 nothing and names each problem at once: a value of the wrong type or out of
 range, two arguments that contradict each other, or a name the tool doesn't

@@ -26,22 +26,28 @@ export async function logged(h: { stderr: () => string }, line: string) {
   }
 }
 
+/** The server's files in a test's own directory. */
+export interface ServerFiles { dir: string; reminders: string; config: string; }
+
 /** Start the server on a fresh config, with `reminders` stored, and act as its
  *  host: initialize, send the policy as a Request, and answer each push/event
  *  as `answerPush` says, at once, or when the promise it returns settles. With
  *  `mcpl` false it initializes as an MCP-only host, which sends no policy;
  *  with `policy` false it sends none either, as a pre-0.5 host's Request never
- *  comes. `env` is added to the server's environment. */
+ *  comes. `env` is added to the server's environment, and `prepare` can then
+ *  put anything at the files' paths before the start. */
 export async function serverWithHost(
   answerPush: (p: PushEventParams) => PushAnswer | Promise<PushAnswer>,
-  { reminders = [] as unknown[], mcpl = true, policy = true, env = {} as Record<string, string> } = {},
+  { reminders = [] as unknown[], mcpl = true, policy = true, env = {} as Record<string, string>, prepare = (_files: ServerFiles) => {} } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'hb-scripted-host-'));
   const remindersFile = join(dir, 'reminders.json');
+  const files: ServerFiles = { dir, reminders: remindersFile, config: join(dir, 'config.json') };
   writeFileSync(remindersFile, JSON.stringify(reminders));
+  prepare(files);
   const child = spawn(process.execPath, ['--import', 'tsx', join(ROOT, 'src', 'index.ts'), '--stdio'], {
     cwd: ROOT,
-    env: { ...process.env, ...env, HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'), HEARTBEAT_REMINDERS_FILE: remindersFile },
+    env: { ...process.env, ...env, HEARTBEAT_CONFIG_FILE: files.config, HEARTBEAT_REMINDERS_FILE: remindersFile },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '';
@@ -97,5 +103,5 @@ export async function serverWithHost(
    *  has exited and its log is read. */
   const crash = () => { child.kill('SIGKILL'); return exited; };
   const stored = () => JSON.parse(readFileSync(remindersFile, 'utf8')) as Array<Record<string, unknown>>;
-  return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp, crash };
+  return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp, crash, files };
 }
