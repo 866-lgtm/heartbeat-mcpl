@@ -23,7 +23,8 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 // mcpl-harness is not published to npm, so HostSession is loaded from a
 // checkout. Resolution order: $MCPL_HARNESS_SESSION (explicit path to
 // src/session.ts), then a sibling checkout next to this repo (what CI clones
-// — see .github/workflows/publish.yml), then known dev-box locations.
+// — see .github/workflows/ci.yml and publish.yml), then known dev-box
+// locations.
 const HARNESS_CANDIDATES = [
   process.env.MCPL_HARNESS_SESSION,
   join(HERE, '..', '..', 'mcpl-harness', 'src', 'session.ts'),

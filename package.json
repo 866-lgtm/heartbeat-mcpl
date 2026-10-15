@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/reminder-text.test.ts test/reminder-time.test.ts test/reminder-time.harness.mjs && node --import tsx test/reminders.harness.mjs"
+    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/reminder-text.test.ts test/reminder-time.test.ts test/timer.test.ts test/reminder-time.harness.mjs test/intervals.harness.mjs && node --import tsx test/reminders.harness.mjs"
   },
   "dependencies": {
     "@animalabs/mcpl-core": "^0.2.1"
@@ -20,7 +20,7 @@
     "typescript": "^7.0.2"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.12.0"
   },
   "repository": {
     "type": "git",

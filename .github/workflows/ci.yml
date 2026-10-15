@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Both ends of the range package.json's engines admits: its floor,
+      # pinned exactly (keep the two in step), so a change that needs a newer
+      # Node fails here rather than for someone running the floor; and the
+      # newest release. Between them, each maintained Node line between
+      # those two majors (24 today), since each line ships its own built-in
+      # fetch.
+      matrix:
+        node: ['22.12.0', '24', 'latest']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      # npm ci installs the lock verbatim and fails on one that is out of
+      # sync with package.json.
+      - name: Install dependencies (strict lockfile)
+        run: npm ci
+
+      # mcpl-harness is not published to npm; test/reminders.harness.mjs loads
+      # HostSession from a sibling checkout (../mcpl-harness), as the publish
+      # workflow's tests do.
+      - name: Checkout mcpl-harness (e2e test harness)
+        run: |
+          git clone --depth 1 https://github.com/anima-research/mcpl-harness.git ../mcpl-harness
+          npm install --prefix ../mcpl-harness --omit=dev --no-audit --no-fund
+
+      # npm test builds first (npm run build), so the build runs on each Node.
+      - name: Test
+        run: npm test
