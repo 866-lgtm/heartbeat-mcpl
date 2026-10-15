@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseReminderTime } from '../src/reminder-time.js';
+import { canHoldTime, parseReminderTime } from '../src/reminder-time.js';
 
 for (const [label, time, zone, expected] of [
   ['winter', '2024-01-15T09:00:00', 'America/New_York', '2024-01-15T14:00:00Z'],
@@ -195,4 +195,13 @@ test('invalid calendar dates and forms other than an ISO calendar date are refus
       time,
     );
   }
+});
+
+test('a reminder can hold exactly the times a Date can, both ends included', () => {
+  assert.equal(canHoldTime(8.64e15), true);
+  assert.equal(canHoldTime(8.64e15 + 1), false);
+  assert.equal(canHoldTime(-8.64e15), true);
+  assert.equal(canHoldTime(-8.64e15 - 1), false);
+  assert.equal(canHoldTime(Infinity), false);
+  assert.equal(canHoldTime(Number.NaN), false);
 });

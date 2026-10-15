@@ -68,7 +68,8 @@ interface Span { field: string; value: number; seconds: number; }
 
 /** Read a delay (inHours|inMinutes|inSeconds) or an interval
  *  (everyHours|everyMinutes|everySeconds), in seconds floored at
- *  MIN_REMINDER_SECONDS. When several units are given, the smallest wins.
+ *  MIN_REMINDER_SECONDS. When several units are given, the smallest unit wins
+ *  (seconds over minutes over hours, whatever their values), as before.
  *  Returns null when that one isn't a positive number. A length past what a
  *  number can hold reads as Infinity, for reminder_add to refuse by name. */
 function readSpan(args: Record<string, unknown>, prefix: 'in' | 'every'): Span | null {
@@ -120,15 +121,18 @@ function saveConfig(c: HeartbeatConfig): void {
   catch (e) { log('config write failed:', (e as Error).message); }
 }
 
+/** A reminder as the file may hold it: earlier versions saved a time too large
+ *  for a number, which JSON writes as null. */
+type StoredReminder = Omit<Reminder, 'fireAt'> & { fireAt: number | null };
 /** Structural guard so a corrupt/hand-edited reminders file can't crash the
  *  server or inject malformed entries — bad rows are dropped, good ones kept. */
-function isReminder(x: unknown): x is Reminder {
+function isStoredReminder(x: unknown): x is StoredReminder {
   if (typeof x !== 'object' || x === null) return false;
   const r = x as Record<string, unknown>;
   return typeof r.id === 'string'
     && typeof r.message === 'string'
     && typeof r.createdAt === 'number'
-    && typeof r.fireAt === 'number'
+    && (r.fireAt === null || typeof r.fireAt === 'number')
     && (r.everySeconds === null || typeof r.everySeconds === 'number');
 }
 function loadReminders(): Reminder[] {
@@ -136,12 +140,14 @@ function loadReminders(): Reminder[] {
     if (existsSync(REMINDERS_PATH)) {
       const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
-        // A time outside a Date's range can never fire, and listing it throws,
-        // which took reminder_list down for every reminder. reminder_add
-        // saved such times before it checked them.
-        const holdable = parsed.filter(isReminder).filter((r) => {
-          if (canHoldTime(r.fireAt)) return true;
-          log(`dropped reminder ${r.id}: its stored time, ${r.fireAt}, is outside the times a reminder can hold`);
+        // A time outside a Date's range, or the null JSON wrote for one too
+        // large for a number, can never fire, and listing it throws, which took
+        // reminder_list down for every reminder. reminder_add saved such times
+        // before it checked them. The log line keeps the row, message and all,
+        // since the next save leaves it out of the file.
+        const holdable = parsed.filter(isStoredReminder).filter((r): r is Reminder => {
+          if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
+          log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold`);
           return false;
         });
         // A stored interval means what reminder_add would have made of it: 0
