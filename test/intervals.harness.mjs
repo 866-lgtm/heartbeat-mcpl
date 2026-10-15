@@ -102,6 +102,9 @@ test('a stored heartbeat interval is read as heartbeat_configure would have take
   // Saved as given by earlier versions; its next heartbeat would fall past the last time a Date holds.
   await restartWith({ intervalSeconds: 1e306, paused: false });
   assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'an interval too long to schedule, saved for "never", loads paused');
+  // Finite in milliseconds too, and still past the last time a Date holds once added to now.
+  await restartWith({ intervalSeconds: 9e12, paused: false });
+  assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'and so does a finite one');
 });
 
 const reminderRow = (id, fireAt, everySeconds) => ({ id, message: id, createdAt: Date.now(), fireAt, everySeconds });

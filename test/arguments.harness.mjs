@@ -41,6 +41,8 @@ test('every argument is applied, or the call is refused and changes nothing', as
   };
   const stored = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : '');
   const saved = () => (existsSync(reminders) ? JSON.parse(readFileSync(reminders, 'utf8')) : []);
+  const listed = async (id) => (await call('reminder_list', {})).text.split('\n').find((line) => line.startsWith(`${id} |`));
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const fired = [];
   session.on('event', (ev) => {
     if (ev.kind === 'push' && ev.data?.origin?.source === 'reminder') fired.push(ev.data.origin.reminderId);
@@ -76,13 +78,17 @@ test('every argument is applied, or the call is refused and changes nothing', as
   });
 
   await t.test('an interval under the floor is refused, not raised to it; one at the floor is applied', async () => {
-    for (const [seconds, shown] of [[10, '10'], [59.5, '59\\.5']]) {
+    // A length is kept and compared to the millisecond, so 59.9994 s is 59.999 s, under the floor.
+    for (const [seconds, shown, kept] of [[10, '10', '10'], [59.5, '59\\.5', '59\\.5'], [59.9994, '59\\.9994', '59\\.999']]) {
       const { isError, text } = await call('heartbeat_configure', { intervalSeconds: seconds });
       assert.equal(isError, true);
-      assert.match(text, new RegExp(`"intervalSeconds" ${shown} is ${shown} s, under the heartbeat's 60-second floor`));
+      assert.match(text, new RegExp(`"intervalSeconds" ${shown} is ${kept} s, under the heartbeat's 60-second floor; `
+        + 'give 60 seconds or more, or leave the interval out and pause the heartbeat with "paused": true\\.$'));
       assert.match((await call('heartbeat_status', {})).text, /interval=5400s/);
     }
     assert.match((await call('heartbeat_configure', { intervalSeconds: 60 })).text, /^Updated\. .*interval=60s/);
+    // ... and 59.9996 s is 60 s, at it.
+    assert.match((await call('heartbeat_configure', { intervalSeconds: 59.9996 })).text, /^Updated\. .*interval=60s/);
     assert.match((await call('heartbeat_configure', { intervalHours: 1.5 })).text, /^Updated\. .*interval=5400s/);
   });
 
@@ -91,13 +97,27 @@ test('every argument is applied, or the call is refused and changes nothing', as
     for (const [args, reason] of [
       [{ message: '  ' }, /"message" is blank/],
       [{ intervalMinutes: -5 }, /"intervalMinutes" -5 is negative; give 0 or more\./],
-      [{ intervalHours: 1e306 }, /"intervalHours" 1e\+306 puts the next heartbeat past \+275760-09-13T00:00:00Z, the last time it can be set for; give a shorter interval, or pause the heartbeat with "paused": true\.$/],
+      [{ intervalHours: 1e306 }, /"intervalHours" 1e\+306 puts the next heartbeat past \+275760-09-13T00:00:00Z, the last time it can be set for; give a shorter interval, or leave the interval out and pause the heartbeat with "paused": true\.$/],
+      // Finite, and past the last time a Date holds once added to now.
+      [{ intervalSeconds: 9e12 }, /^heartbeat_configure: nothing was changed\. "intervalSeconds" 9000000000000 puts the next heartbeat past \+275760-09-13T00:00:00Z/],
     ]) {
       const { isError, text } = await call('heartbeat_configure', args);
       assert.equal(isError, true, text);
       assert.match(text, reason);
     }
     assert.equal(stored(config), before);
+  });
+
+  await t.test('the heartbeat interval may reach the last time a Date holds, and not past it', async () => {
+    // From now to +275760-09-13T00:00:00Z, in whole seconds; an hour either side of it.
+    const room = Math.floor((8.64e15 - Date.now()) / 1000);
+    const within = await call('heartbeat_configure', { intervalSeconds: room - 3600 });
+    assert.equal(within.isError, false, within.text);
+    assert.match(within.text, new RegExp(`^Updated\\. .*interval=${room - 3600}s`));
+    const past = await call('heartbeat_configure', { intervalSeconds: room + 3600 });
+    assert.equal(past.isError, true, past.text);
+    assert.match(past.text, /puts the next heartbeat past \+275760-09-13T00:00:00Z, the last time it can be set for/);
+    assert.match((await call('heartbeat_configure', { intervalHours: 1.5 })).text, /^Updated\. .*interval=5400s/);
   });
 
   await t.test('a key like nothing here is ignored and named; sent alone, it is refused', async () => {
@@ -107,6 +127,10 @@ test('every argument is applied, or the call is refused and changes nothing', as
     const alone = await call('heartbeat_configure', { reason: 'quieter' });
     assert.equal(alone.isError, true);
     assert.match(alone.text, /^heartbeat_configure: nothing was changed\. It doesn't take "reason"; it takes /);
+    // Refused for something else, the call is told it doesn't take the key either.
+    const refused = await call('heartbeat_configure', { intervalSeconds: 30, reason: 'quieter' });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, /^heartbeat_configure: nothing was changed\. "intervalSeconds" 30 is 30 s, under the heartbeat's 60-second floor; .* It also doesn't take "reason"; it takes "intervalSeconds", /);
     // A part of an argument's name is a shortened attempt at it, so it is refused.
     const before = stored(config);
     const part = await call('heartbeat_configure', { paused: false, mode: 'silent' });
@@ -146,15 +170,35 @@ test('every argument is applied, or the call is refused and changes nothing', as
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.deepEqual(fired, [zeroId], 'the reminder with no delay fires, and only it');
-    // The server saves just after it pushes, so ask it first: its answer comes after the save.
-    assert.doesNotMatch((await call('reminder_list', {})).text, new RegExp(zeroId), 'and is gone once it has');
+    // The host's answer to its push is what removes it, so wait until the server has applied it.
+    for (const deadline = Date.now() + 5_000; await listed(zeroId) !== undefined; await sleep(50)) {
+      assert.ok(Date.now() < deadline, 'it is gone once the host has taken its push');
+    }
     assert.equal(saved().some((r) => r.id === zeroId), false, 'from the file too');
   });
 
+  await t.test("a reminder's stored times are whole milliseconds, its first fire and each advance", async () => {
+    // 8.001 s is 8000.999999999999 ms in floating point.
+    const later = await add({ inSeconds: 8.001 }, 8001);
+    assert.ok(Number.isInteger(later.fireAt), `its first fire, ${later.fireAt}`);
+    assert.equal((await call('reminder_cancel', { id: later.id })).isError, false);
+    const repeating = await call('reminder_add', { message: 'x', inSeconds: 0, everySeconds: 8.001 });
+    assert.equal(repeating.isError, false, repeating.text);
+    const id = /^Reminder (rem_\S+) set/.exec(repeating.text)?.[1];
+    // It fires at once, and advances a period once the host has taken it.
+    for (const deadline = Date.now() + 5_000; !/\(~[1-9]\d*s\)/.test(await listed(id) ?? ''); await sleep(50)) {
+      assert.ok(Date.now() < deadline, 'it fired, and advanced once the host took it');
+    }
+    const row = saved().find((r) => r.id === id);
+    assert.equal(row.fireAt, row.createdAt + 8001, 'a period on, in whole milliseconds');
+    assert.equal((await call('reminder_cancel', { id })).isError, false);
+  });
+
   await t.test('a repeating reminder at its floor is set, and a fraction is kept', async () => {
-    for (const seconds of [5, 7.5]) {
-      const row = await add({ everySeconds: seconds }, seconds * 1000);
-      assert.equal(row.everySeconds, seconds);
+    // 4.9996 s is 5 s to the millisecond, so it is at the floor.
+    for (const [seconds, kept] of [[5, 5], [7.5, 7.5], [4.9996, 5]]) {
+      const row = await add({ everySeconds: seconds }, kept * 1000);
+      assert.equal(row.everySeconds, kept);
       assert.equal((await call('reminder_cancel', { id: row.id })).isError, false);
     }
   });
@@ -173,12 +217,15 @@ test('every argument is applied, or the call is refused and changes nothing', as
       ['reminder_add', { message: 'x', atIso: '2099-07-15T09:00Z', inMinutes: 5 }, /"atIso" and the delay, "inMinutes" 5, both set when it first fires; give one of them\./],
       ['reminder_add', { message: 'x', everySeconds: 2 }, /"everySeconds" 2 is 2 s, under the 5-second floor for a repeating reminder/],
       ['reminder_add', { message: 'x', everySeconds: 4.9 }, /"everySeconds" 4\.9 is 4\.9 s, under the 5-second floor for a repeating reminder/],
+      // Kept and compared to the millisecond: 4.9994 s is 4.999 s.
+      ['reminder_add', { message: 'x', everySeconds: 4.9994 }, /"everySeconds" 4\.9994 is 4\.999 s, under the 5-second floor for a repeating reminder/],
       ['reminder_add', { message: 'x', inMinutes: '5' }, /"inMinutes" is the string "5"; give it as a number: 5\./],
       ['reminder_add', { message: 'x', inMinutes: -5, everySeconds: 10 }, /"inMinutes" -5 is negative; give 0 or more\./],
       ['reminder_add', { message: 'x', inSeconds: 5, every: 60 }, /"every" isn't an argument reminder_add takes; the closest is "everyHours" or "everySeconds"\./],
       ['reminder_add', { message: '  ', inMinutes: 5 }, /"message" is blank/],
       ['reminder_add', { message: 'x' }, /No time was given: give a delay in inSeconds, inMinutes or inHours, a time in atIso, or an interval/],
       ['reminder_cancel', { id: 5 }, /^reminder_cancel: nothing was cancelled\. "id" is the number 5/],
+      ['reminder_cancel', {}, /^reminder_cancel: nothing was cancelled\. "id" is missing: the id of the reminder to cancel, as reminder_add returned it and reminder_list shows it; it starts with rem_\.$/],
       ['reminder_cancel', { id: '  ' }, /"id" is blank/],
     ]) {
       const { isError, text } = await call(name, args);

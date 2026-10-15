@@ -75,6 +75,16 @@ test('the note on ignored keys names them and every argument the tool takes, app
     'It also doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
 });
 
+test('a letter or two of a name, or a key that shares only its start with one, is no slip', () => {
+  // As agent-framework's helper decides: a part of a name needs three letters, and a shared start counts for nothing.
+  const add: ToolSchema = { name: 'add', inputSchema: { properties: {
+    message: { type: 'string', description: 'The text.' },
+    atIso: { type: 'string', description: 'A time.' },
+  } } };
+  assert.deepEqual(checkArguments(add, { message: 'm', at: '2099-01-01' }, [add]), { problems: [], ignored: ['at'] });
+  assert.deepEqual(checkArguments(configure, { paused: true, intervalMins: 30 }, tools), { problems: [], ignored: ['intervalMins'] });
+});
+
 test('arguments that aren\'t an object are a problem', () => {
   assert.deepEqual(checkArguments(cancel, 'rem_1', tools).problems, [
     'Its arguments are the string "rem_1"; give an object of named arguments, such as {"id": …}.',

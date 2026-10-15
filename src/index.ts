@@ -535,10 +535,10 @@ class HeartbeatServer {
     const interval = addUnits(args, INTERVAL_UNITS, problems);
     if (interval && !canHoldTime(Date.now() + interval.seconds * 1000)) {
       problems.push(`${givenText(interval, ['puts', 'put'])} the next heartbeat past ${LAST_REMINDER_TIME}, the last time it can be set for; `
-        + 'give a shorter interval, or pause the heartbeat with "paused": true.');
+        + 'give a shorter interval, or leave the interval out and pause the heartbeat with "paused": true.');
     } else if (interval && interval.seconds < MIN_HEARTBEAT_SECONDS) {
       problems.push(`${givenText(interval)} ${interval.seconds} s, under the heartbeat's ${MIN_HEARTBEAT_SECONDS}-second floor; `
-        + `give ${MIN_HEARTBEAT_SECONDS} seconds or more, or pause it with "paused": true.`);
+        + `give ${MIN_HEARTBEAT_SECONDS} seconds or more, or leave the interval out and pause the heartbeat with "paused": true.`);
     }
     if (typeof args.message === 'string' && !args.message.trim()) {
       problems.push('"message" is blank; give the text each heartbeat should bring, or leave it out to keep the one it has.');
@@ -859,9 +859,12 @@ class HeartbeatServer {
       } else {
         // Advance to the next future time. If we were behind (e.g. the server was
         // down through several intervals), skip ahead rather than firing a burst.
+        // The period is rounded to the millisecond, as the first fire is, so a
+        // stored time stays whole: 8.001 s is 8000.999999999999 ms unrounded.
         const now = Date.now();
-        let next = rem.fireAt + rem.everySeconds * 1000;
-        if (next <= now) next = now + rem.everySeconds * 1000;
+        const periodMs = Math.round(rem.everySeconds * 1000);
+        let next = rem.fireAt + periodMs;
+        if (next <= now) next = now + periodMs;
         // A next time past the last a Date holds could never fire, and listing
         // it would throw, so the reminder ends here. The log line keeps the
         // row, message and all, since this save leaves it out of the file.
