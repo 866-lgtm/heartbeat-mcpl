@@ -1,7 +1,7 @@
 // Exercise the built server through the same HostSession used by reminders.harness.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +73,26 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
       });
     }
 
+    // A delay or interval past the last time a reminder can hold used to be
+    // saved before the log line threw on it, and from then on reminder_list
+    // threw for every reminder.
+    for (const [args, reason] of [
+      [{ inSeconds: 1e13 }, /"inSeconds" 10000000000000 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay/],
+      [{ inHours: 1e306 }, /"inHours" 1e\+306 puts it past/],
+      [{ everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its first fire past .* Give a shorter interval\./],
+      [{ inSeconds: 5, everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its second fire past .* Give a shorter interval\./],
+    ]) {
+      await t.test(`refuse ${JSON.stringify(args)} without saving it, and keep listing`, async () => {
+        const before = saved();
+        const result = await session.callTool('reminder_add', { message: 'too far', ...args });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /^reminder_add: no reminder was set\. /);
+        assert.match(result.content[0].text, reason);
+        assert.equal(saved(), before);
+        assert.notEqual((await session.callTool('reminder_list', {})).isError, true);
+      });
+    }
+
     for (const [atIso, expected] of [
       ['2099-01-15T09:00:00', inNewYork('2099-01-15T09:00:00')],
       ['2099-11-01T01:30:00-04:00', Date.parse('2099-11-01T05:30:00Z')],
@@ -88,6 +108,45 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
         await session.callTool('reminder_cancel', { id: reminder.id });
       });
     }
+  } finally {
+    session.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a stored time a reminder can\'t hold is dropped at load, and a recurring reminder ends before its next time passes it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'heartbeat-range-'));
+  const reminders = join(dir, 'reminders.json');
+  const now = Date.now();
+  const row = (id, fireAt, everySeconds) => ({ id, message: id, createdAt: now, fireAt, everySeconds });
+  // A time like the one reminder_add saved for {inSeconds: 1e13}; a recurring
+  // reminder whose next time will be past the last one; and an ordinary one.
+  writeFileSync(reminders, JSON.stringify([
+    row('rem_far', now + 1e16, null),
+    row('rem_last', now + 1000, 1e13),
+    row('rem_ok', now + 3_600_000, null),
+  ]));
+  const session = new HostSession({
+    command: 'node',
+    args: [server, '--stdio'],
+    env: { HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'), HEARTBEAT_REMINDERS_FILE: reminders },
+    autoApprove: true,
+  });
+  const listed = async () => {
+    const result = await session.callTool('reminder_list', {});
+    assert.notEqual(result.isError, true, result.content[0].text);
+    return [...result.content[0].text.matchAll(/^(rem_\w+) \|/gm)].map((m) => m[1]);
+  };
+  try {
+    await session.start();
+    await session.raw('featureSets/update', {
+      effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: [],
+      enabled: ['heartbeat'], disabled: [],
+    });
+    assert.deepEqual(await listed(), ['rem_last', 'rem_ok']);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    assert.deepEqual(await listed(), ['rem_ok']);
+    assert.deepEqual(JSON.parse(readFileSync(reminders, 'utf8')).map((r) => r.id), ['rem_ok']);
   } finally {
     session.close();
     rmSync(dir, { recursive: true, force: true });
