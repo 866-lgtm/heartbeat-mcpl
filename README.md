@@ -1,6 +1,7 @@
 # @connectome/heartbeat-mcpl
 
-Periodic self-wake MCPL server for Connectome agents.
+Periodic self-wake MCPL server for Connectome agents. It needs Node.js
+22.12.0 or later.
 
 On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 `origin.source: heartbeat`) to wake the agent for a self-check-in. The agent
