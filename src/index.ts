@@ -25,7 +25,7 @@ import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
 import { formatReminderText } from './reminder-text.js';
-import { LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
+import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
@@ -147,7 +147,8 @@ function loadReminders(): Reminder[] {
         // since the next save leaves it out of the file.
         const holdable = parsed.filter(isStoredReminder).filter((r): r is Reminder => {
           if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
-          log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold`);
+          log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+            + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`);
           return false;
         });
         // A stored interval means what reminder_add would have made of it: 0
@@ -812,11 +813,13 @@ class HeartbeatServer {
         let next = rem.fireAt + rem.everySeconds * 1000;
         if (next <= now) next = now + rem.everySeconds * 1000;
         // A next time past the last a Date holds could never fire, and listing
-        // it would throw, so the reminder ends here.
+        // it would throw, so the reminder ends here. The log line keeps the
+        // row, message and all, since this save leaves it out of the file.
         if (canHoldTime(next)) this.reminders[i] = { ...rem, fireAt: next };
         else {
           this.reminders.splice(i, 1);
-          log(`ended recurring reminder ${rem.id}: its next time, ${next}, is past the last time a reminder can hold`);
+          log(`ended recurring reminder ${JSON.stringify(rem)}: its next time, ${next}, is past ${LAST_REMINDER_TIME}, `
+            + 'the last time a reminder can hold');
         }
       }
       saveReminders(this.reminders);

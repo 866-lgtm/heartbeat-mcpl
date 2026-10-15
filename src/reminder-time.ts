@@ -1,7 +1,8 @@
 const DAY_MS = 86_400_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
-/** The last instant a Date, and so a reminder, can hold. */
+/** The first and last instants a Date, and so a reminder, can hold. */
+export const FIRST_REMINDER_TIME = '-271821-04-20T00:00:00Z';
 export const LAST_REMINDER_TIME = '+275760-09-13T00:00:00Z';
 
 /** Whether a reminder can hold this time: a Date can, so it can be listed and
