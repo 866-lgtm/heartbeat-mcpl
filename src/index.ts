@@ -211,11 +211,6 @@ class HeartbeatServer {
   /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
    *  Until then every capability-dependent behavior is unavailable. */
   private policyReady = false;
-  /** Whether the host's first Request-form featureSets/update has arrived.
-   *  Reminders wait for it: one that fell due while the server was down would
-   *  otherwise fire before the host had said whether a push may go out, and
-   *  be lost. */
-  private policyArrived = false;
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
@@ -224,8 +219,8 @@ class HeartbeatServer {
     this.conn = conn;
     await this.handleInitialize();
     this.reschedule();
-    // Reminders loaded from disk resume once the host's first policy arrives
-    // (handleFeatureSetsUpdateRequest), saying whether their pushes may go out.
+    // Reminders loaded from disk wait until their wakes can be delivered, which
+    // the host's policy decides (scheduleReminders).
     try {
       while (!conn.isClosed) {
         const msg = await conn.nextMessage();
@@ -316,6 +311,7 @@ class HeartbeatServer {
       this.policyReady = false;
       log(`featureSets/update rejected as malformed: ${parsed.error}; grant cleared`);
       conn.sendError(req.id, -32602, `Invalid featureSets/update: ${parsed.error}`);
+      this.scheduleReminders();
       return;
     }
     this.grant = parsed.grant;
@@ -333,14 +329,7 @@ class HeartbeatServer {
     }
     for (const note of receipt.notes ?? []) log(`receipt note: ${note}`);
     conn.sendResponse(req.id, receipt);
-    if (!this.policyArrived) {
-      // Restart-survival: reminders loaded from disk, overdue ones included,
-      // start once the host has said whether a push may go out. One that
-      // falls due while the policy blocks pushes is dropped with a log line,
-      // as the host chose.
-      this.policyArrived = true;
-      this.scheduleReminders();
-    }
+    this.scheduleReminders();
   }
 
   /**
@@ -359,6 +348,7 @@ class HeartbeatServer {
     this.grant = narrowGrant(this.grant, parsed.grant, parsed.hadEffectiveCapabilities);
     log(`featureSets/update (Notification) applied as reduction only: grant=[${this.grant.patterns.join(', ')}]`
       + (this.policyReady ? '' : '; ready state NOT established — §6.7 requires a Request'));
+    this.scheduleReminders();
     if (!this.policyReady) {
       // The one moment we can positively identify a pre-0.5 host: it is talking
       // policy, but in the form §6.7 says cannot establish ready state. Say so
@@ -601,9 +591,9 @@ class HeartbeatServer {
   }
 
   private describeReminder(rem: Reminder, now: number): string {
-    const inS = Math.max(0, Math.round((rem.fireAt - now) / 1000));
+    const when = rem.fireAt <= now ? 'overdue' : `~${Math.round((rem.fireAt - now) / 1000)}s`;
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
-    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (~${inS}s) | ${rec} | "${rem.message}"`;
+    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
   }
 
   private listRemindersText(): string {
@@ -612,7 +602,12 @@ class HeartbeatServer {
     const lines = [...this.reminders]
       .sort((a, b) => a.fireAt - b.fireAt)
       .map((r) => `${r.id} | ${this.describeReminder(r, now)}`);
-    return `${this.reminders.length} reminder(s):\n${lines.join('\n')}`;
+    // Say why a due reminder hasn't fired, where the agent looks for it.
+    const blocked = this.pushBlockedReason();
+    const waiting = blocked
+      ? `\nNo wake can be delivered now (${blocked}), so a reminder that falls due waits, and fires once one can.`
+      : '';
+    return `${this.reminders.length} reminder(s):\n${lines.join('\n')}${waiting}`;
   }
 
   private cancelReminder(args: Record<string, unknown>) {
@@ -628,12 +623,15 @@ class HeartbeatServer {
   }
 
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all
-   *  reminders; it re-arms after each fire. Until the host's first policy
-   *  arrives, nothing is armed. */
+   *  reminders; it re-arms after each fire, and each change of the host's
+   *  policy re-arms it. A reminder fires only when its wake can be delivered:
+   *  while something blocks it (no valid policy yet, a malformed one, or one
+   *  that denies wakes), nothing is armed, and a due reminder waits, overdue,
+   *  rather than being pushed into nothing and removed. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
-    if (!this.policyArrived || this.reminders.length === 0) return;
+    if (this.pushBlockedReason() !== null || this.reminders.length === 0) return;
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
     this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
   }
