@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canHoldTime, parseReminderTime } from '../src/reminder-time.js';
+import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from '../src/reminder-time.js';
+import { serverWithHost } from './scripted-host.js';
 
 for (const [label, time, zone, expected] of [
   ['winter', '2024-01-15T09:00:00', 'America/New_York', '2024-01-15T14:00:00Z'],
@@ -204,4 +205,31 @@ test('a reminder can hold exactly the times a Date can, both ends included', () 
   assert.equal(canHoldTime(-8.64e15 - 1), false);
   assert.equal(canHoldTime(Infinity), false);
   assert.equal(canHoldTime(Number.NaN), false);
+});
+
+test('the log keeps each reminder a stored time drops or ends, whole, with the range', async () => {
+  const now = Date.now();
+  const row = (id: string, fireAt: number | null, everySeconds: number | null) =>
+    ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds });
+  // Past the range, the null JSON wrote for an infinite time, and below the
+  // range: each dropped at load. And a recurring reminder whose next time is
+  // past the last one, which ends once the host takes its push.
+  const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
+  const last = row('rem_last', now + 1000, 1e13);
+  const h = await serverWithHost(() => ({}), { reminders: [...dropped, last] });
+  try {
+    await h.pushCount(1);
+    await h.settle();
+    const lines = h.stderr().split('\n');
+    for (const r of dropped) {
+      const line = `[heartbeat-mcpl] dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+        + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`;
+      assert.ok(lines.includes(line), `expected the log line\n${line}\nin\n${h.stderr()}`);
+    }
+    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${last.fireAt + 1e13 * 1000}, `
+      + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
+    assert.ok(lines.includes(ended), `expected the log line\n${ended}\nin\n${h.stderr()}`);
+  } finally {
+    h.close();
+  }
 });
