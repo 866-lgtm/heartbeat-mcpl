@@ -19,6 +19,28 @@ test('a time past setTimeout\'s limit is reached in steps, neither early nor lat
   assert.equal(calls, 1, 'called at its time');
 });
 
+test('no step asks setTimeout for longer than it can hold', async () => {
+  // Real timers: an overlong step would warn and wait 1 ms, and each wake would
+  // ask again, so the process would wake every millisecond without firing.
+  const overflows: string[] = [];
+  const onWarning = (warning: Error) => { if (warning.name === 'TimeoutOverflowWarning') overflows.push(warning.message); };
+  process.on('warning', onWarning);
+  const cancel = callAt(Date.now() + 30 * DAY_MS, () => {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  cancel();
+  process.off('warning', onWarning);
+  assert.deepEqual(overflows, []);
+});
+
+test('a time already passed is called from a timer, not before callAt returns', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  let calls = 0;
+  callAt(0, () => { calls++; });
+  assert.equal(calls, 0, 'not called synchronously');
+  t.mock.timers.tick(1);
+  assert.equal(calls, 1);
+});
+
 test('cancelling after a step has passed cancels the step that is pending', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   let calls = 0;

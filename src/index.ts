@@ -69,13 +69,18 @@ function loadConfig(): HeartbeatConfig {
     if (existsSync(CONFIG_PATH)) {
       const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
       if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
-      // heartbeat_configure saves 60 seconds or more, and an infinite interval
-      // as null. Any other value falls back to the default: some, such as null,
-      // zero or a negative number, would fire the heartbeat about every
-      // millisecond.
-      if (!(Number.isFinite(merged.intervalSeconds) && merged.intervalSeconds >= 60)) {
-        log(`config intervalSeconds ${JSON.stringify(merged.intervalSeconds)} is not a number of seconds, 60 or more; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
+      // A stored interval means what heartbeat_configure would have made of it:
+      // under 60 s is raised to 60 (Math.max(60, …)), and one that isn't a
+      // finite number, such as the null it saves for an infinite interval,
+      // falls back to the default. Before, null, zero or a negative number
+      // fired the heartbeat about every millisecond.
+      const stored: unknown = merged.intervalSeconds;
+      if (typeof stored !== 'number' || !Number.isFinite(stored)) {
+        log(`config intervalSeconds ${JSON.stringify(stored)} is not a number of seconds; using the default, ${DEFAULT_CONFIG.intervalSeconds}s`);
         merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+      } else if (stored < 60) {
+        log(`config intervalSeconds ${stored} is under the 60-second floor; using 60s`);
+        merged.intervalSeconds = 60;
       }
       return merged;
     }
@@ -103,11 +108,16 @@ function loadReminders(): Reminder[] {
     if (existsSync(REMINDERS_PATH)) {
       const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
-        // reminder_add floors an interval at MIN_REMINDER_SECONDS. A stored one
-        // under it would fire again at once on every advance, about every
-        // millisecond for 0 or less, so it gets the floor too.
+        // A stored interval means what reminder_add would have made of it: 0
+        // or less is no interval, so the reminder is a one-off, and under
+        // MIN_REMINDER_SECONDS is raised to it. Before, 0 or less fired again
+        // at once on every advance, about every millisecond.
         return parsed.filter(isReminder).map((r) => {
           if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
+          if (r.everySeconds <= 0) {
+            log(`reminder ${r.id}: stored interval ${r.everySeconds}s is no interval; it fires once`);
+            return { ...r, everySeconds: null };
+          }
           log(`reminder ${r.id}: stored interval ${r.everySeconds}s is under the ${MIN_REMINDER_SECONDS}-second floor; using ${MIN_REMINDER_SECONDS}s`);
           return { ...r, everySeconds: MIN_REMINDER_SECONDS };
         });
