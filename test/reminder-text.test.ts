@@ -50,9 +50,17 @@ test('a reminder that fires a minute or more late names when it was due', () => 
   );
 });
 
-test('a reminder less than a minute late leaves the due time out', () => {
-  const text = formatReminderText(
-    { id: 'rem_g', message: 'Hi.', createdAt: SET, fireAt: ON_TIME - 59_999, everySeconds: null }, NOW, ZONE,
+test('a reminder less than a minute late leaves the due time out, and one exactly a minute late names it', () => {
+  const late = (ms: number) => formatReminderText(
+    { id: 'rem_g', message: 'Hi.', createdAt: SET, fireAt: ON_TIME - ms, everySeconds: null }, NOW, ZONE,
   );
-  assert.doesNotMatch(text, /, due /);
+  assert.doesNotMatch(late(59_999), /, due /);
+  assert.match(late(60_000), /, due 2026-10-12T20:01:36-07:00 \[America\/Los_Angeles\] · /);
+});
+
+test('an unrenderable due time is left out instead of throwing in the timer', () => {
+  assert.equal(
+    formatReminderText({ id: 'rem_h', message: 'Hi.', createdAt: SET, fireAt: -1e20, everySeconds: null }, NOW, ZONE),
+    '[reminder rem_h, set 2026-10-10T08:02:36-07:00 [America/Los_Angeles] · current time: 2026-10-12T20:02:36-07:00 [America/Los_Angeles]] Hi.',
+  );
 });

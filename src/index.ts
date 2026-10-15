@@ -368,7 +368,10 @@ class HeartbeatServer {
   /** Why a wake cannot be delivered right now, or null when it can. */
   private pushBlockedReason(): string | null {
     if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
-    if (!this.policyReady) return 'no featureSets/update Request received yet; capability-dependent behavior is unavailable until initial policy completes (§5.3)';
+    if (!this.policyReady) {
+      return 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
+        + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
+    }
     const state = this.featureSetState();
     if (state.active) return null;
     if (state.reason === 'capability_denied') return `capability not granted: ${state.missing.join(', ')} (§5.4 — absence is denial)`;
@@ -566,7 +569,7 @@ class HeartbeatServer {
       } catch (error) {
         return this.text(`reminder_add: ${(error as Error).message}`, true);
       }
-      // A past time is allowed: it fires on the next tick.
+      // A past time is allowed: it fires on the next tick a wake can be delivered.
     }
 
     if (fireAt === null) {
@@ -587,7 +590,18 @@ class HeartbeatServer {
     saveReminders(this.reminders);
     this.scheduleReminders();
     log(`added reminder ${rem.id} fireAt=${new Date(fireAt).toISOString()} every=${everySeconds ?? 'once'}`);
-    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}`);
+    // A fire time the reminder won't keep would be a false success.
+    const blocked = this.pushBlockedReason();
+    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
+  }
+
+  /** What a due reminder does while no wake can be delivered, for
+   *  reminder_list (`one` false) and for the reminder reminder_add has just
+   *  set (`one` true): it waits until one can, unless the host has no push
+   *  events at all, when none ever can. */
+  private heldText(blocked: string, one: boolean): string {
+    if (!this.mcplEnabled) return `No wake can be delivered on this host: ${blocked}. ${one ? "It won't fire" : 'No reminder will fire'} here.`;
+    return `No wake can be delivered now: ${blocked}. ${one ? 'It' : 'A reminder that falls due'} waits until one can.`;
   }
 
   private describeReminder(rem: Reminder, now: number): string {
@@ -602,11 +616,10 @@ class HeartbeatServer {
     const lines = [...this.reminders]
       .sort((a, b) => a.fireAt - b.fireAt)
       .map((r) => `${r.id} | ${this.describeReminder(r, now)}`);
-    // Say why a due reminder hasn't fired, where the agent looks for it.
+    // While no wake can be delivered, say so and what that means for the
+    // reminders, where the agent looks for them.
     const blocked = this.pushBlockedReason();
-    const waiting = blocked
-      ? `\nNo wake can be delivered now (${blocked}), so a reminder that falls due waits, and fires once one can.`
-      : '';
+    const waiting = blocked ? `\n${this.heldText(blocked, false)}` : '';
     return `${this.reminders.length} reminder(s):\n${lines.join('\n')}${waiting}`;
   }
 
@@ -625,13 +638,20 @@ class HeartbeatServer {
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all
    *  reminders; it re-arms after each fire, and each change of the host's
    *  policy re-arms it. A reminder fires only when its wake can be delivered:
-   *  while something blocks it (no valid policy yet, a malformed one, or one
-   *  that denies wakes), nothing is armed, and a due reminder waits, overdue,
-   *  rather than being pushed into nothing and removed. */
+   *  while something blocks it (an MCP-only host, no valid policy yet, a
+   *  malformed one, or one that denies wakes), nothing is armed, and a due
+   *  reminder waits, overdue, rather than being pushed into nothing and
+   *  removed. This runs only on a policy change, an add, a cancel and a fire,
+   *  so its log line for held reminders can't repeat on its own. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
-    if (this.pushBlockedReason() !== null || this.reminders.length === 0) return;
+    if (this.reminders.length === 0) return;
+    const blocked = this.pushBlockedReason();
+    if (blocked !== null) {
+      log(`holding ${this.reminders.length} reminder(s) until a wake can be delivered: ${blocked}`);
+      return;
+    }
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
     this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
   }

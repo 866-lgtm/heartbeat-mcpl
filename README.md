@@ -29,9 +29,16 @@ time, followed by the reminder's own message:
 ```
 
 A recurring reminder says `repeats every <n>s` where a one-shot says when it was
-set. Hosts typically store push content as-is and keep `origin` out of what the
+set. A reminder that fires a minute or more after it was due adds `, due <time>`.
+Hosts typically store push content as-is and keep `origin` out of what the
 model reads, so without the header the message would arrive unattributed. A
 message that opens `Name: …` would then read as a chat line from that person.
+
+A reminder fires only when its wake can be delivered. While no wake can be,
+before the host's policy arrives, after a malformed one, or under one that
+denies wakes, a reminder that falls due waits, overdue, and fires once when one
+can, a recurring one once for the periods it missed. `reminder_list` shows it
+`(overdue)` and ends with why it waits, and the log says how many are held.
 
 ## Silent mode
 
@@ -115,13 +122,14 @@ and read back the degradation receipt (§6.7):
 `effectiveCapabilities` is the sole allowlist (§5.4) and **absence of a path is denial**.
 Omit `pushEvents` and the `heartbeat` feature set is disabled: tools keep answering, but no
 wake is ever delivered. The receipt says so explicitly, `heartbeat_status` reports
-`delivery=BLOCKED (…)`, and the log carries one line per dropped wake.
+`delivery=BLOCKED (…)`, and the log carries one line per dropped heartbeat and one
+per change that leaves reminders held.
 
 **Symptom of a pre-0.5 host** — the server is up, tools work, and no wake ever arrives.
 Check the log for:
 
 ```
-suppressed heartbeat push/event — no featureSets/update Request received yet; …
+suppressed heartbeat push/event — no valid featureSets/update Request in force (none yet, or the last was malformed); …
 WARNING: initial policy has still not arrived as a Request. …
 ```
 

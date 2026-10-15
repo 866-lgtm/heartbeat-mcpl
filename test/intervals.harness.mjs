@@ -128,15 +128,14 @@ test('a stored reminder interval is read as reminder_add would have taken it', a
 });
 
 test('a stored reminder interval of 0 fires once when it falls due, then is gone', async (t) => {
-  // The one that fired every millisecond before. A push before the host's
-  // policy is dropped, which a start slower than its 2 s could cause, so it
-  // must fire exactly once only when the policy came first.
+  // The one that fired every millisecond before. It falls due 2 s after the
+  // server starts, before or after the host's policy arrives, and a reminder
+  // due before the policy waits for it, so it fires exactly once either way.
   const dueAt = Date.now() + 2000;
   const { session, fired } = await start(t, { reminders: [reminderRow('rem_zero', dueAt, 0)] });
-  const policyFirst = Date.now() < dueAt - 100;
-  await sleep(dueAt + 1500 - Date.now());
-  const fires = fired.length;
-  if (policyFirst) assert.equal(fires, 1, `rem_zero fired ${fires} times`);
-  else assert.ok(fires <= 1, `rem_zero fired ${fires} times`);
+  for (const deadline = Math.max(dueAt, Date.now()) + 10_000; fired.length === 0 && Date.now() < deadline;) await sleep(50);
+  // Long enough for the millisecond re-fires it once had to show.
+  await sleep(1000);
+  assert.equal(fired.length, 1, `rem_zero fired ${fired.length} times`);
   assert.equal(lineOf(await listed(session), 'rem_zero'), '', 'rem_zero is gone once it has fired');
 });
