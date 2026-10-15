@@ -102,7 +102,16 @@ function loadReminders(): Reminder[] {
   try {
     if (existsSync(REMINDERS_PATH)) {
       const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
-      if (Array.isArray(parsed)) return parsed.filter(isReminder);
+      if (Array.isArray(parsed)) {
+        // reminder_add floors an interval at MIN_REMINDER_SECONDS. A stored one
+        // under it would fire again at once on every advance, about every
+        // millisecond for 0 or less, so it gets the floor too.
+        return parsed.filter(isReminder).map((r) => {
+          if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
+          log(`reminder ${r.id}: stored interval ${r.everySeconds}s is under the ${MIN_REMINDER_SECONDS}-second floor; using ${MIN_REMINDER_SECONDS}s`);
+          return { ...r, everySeconds: MIN_REMINDER_SECONDS };
+        });
+      }
       log('reminders file is not an array; ignoring');
     }
   } catch (e) { log('reminders read failed:', (e as Error).message); }
