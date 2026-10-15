@@ -107,11 +107,16 @@ test('every argument is applied, or the call is refused and changes nothing', as
     const alone = await call('heartbeat_configure', { reason: 'quieter' });
     assert.equal(alone.isError, true);
     assert.match(alone.text, /^heartbeat_configure: nothing was changed\. It doesn't take "reason"; it takes /);
-    // A name an argument's contains is no slip, but the note says what it may have meant.
-    const near = await call('heartbeat_configure', { paused: false, mode: 'silent' });
-    assert.equal(near.isError, false, near.text);
-    assert.match(near.text, /^Updated\. Heartbeat ACTIVE .* heartbeat_configure ignored "mode", which it doesn't take; the closest it takes is "deliveryMode"\.$/);
-    assert.equal(JSON.parse(stored(config)).deliveryMode, 'message');
+    // A part of an argument's name is a shortened attempt at it, so it is refused.
+    const before = stored(config);
+    const part = await call('heartbeat_configure', { paused: false, mode: 'silent' });
+    assert.equal(part.isError, true, part.text);
+    assert.equal(part.text, 'heartbeat_configure: nothing was changed. "mode" isn\'t an argument heartbeat_configure takes; the closest is "deliveryMode".');
+    assert.equal(stored(config), before);
+    // A key that holds an argument's name is another name: ignored, and the note says what it may have meant.
+    const extra = await call('heartbeat_configure', { paused: false, pausedReason: 'testing' });
+    assert.equal(extra.isError, false, extra.text);
+    assert.match(extra.text, /^Updated\. Heartbeat ACTIVE .* heartbeat_configure ignored "pausedReason", which it doesn't take; the closest it takes is "paused"\.$/);
   });
 
   await t.test('another tool\'s argument is refused where it would do nothing', async () => {
@@ -164,6 +169,7 @@ test('every argument is applied, or the call is refused and changes nothing', as
       ['reminder_add', { message: 'x', everySeconds: 4.9 }, /"everySeconds" 4\.9 is 4\.9 s, under the 5-second floor for a repeating reminder/],
       ['reminder_add', { message: 'x', inMinutes: '5' }, /"inMinutes" is the string "5"; give it as a number: 5\./],
       ['reminder_add', { message: 'x', inMinutes: -5, everySeconds: 10 }, /"inMinutes" -5 is negative; give 0 or more\./],
+      ['reminder_add', { message: 'x', inSeconds: 5, every: 60 }, /"every" isn't an argument reminder_add takes; the closest is "everyHours" or "everySeconds"\./],
       ['reminder_add', { message: '  ', inMinutes: 5 }, /"message" is blank/],
       ['reminder_add', { message: 'x' }, /No time was given: give a delay in inSeconds, inMinutes or inHours, a time in atIso, or an interval/],
       ['reminder_cancel', { id: 5 }, /^reminder_cancel: nothing was cancelled\. "id" is the number 5/],

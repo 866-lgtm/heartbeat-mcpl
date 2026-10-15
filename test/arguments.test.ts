@@ -39,6 +39,11 @@ test('a near miss, or another tool\'s argument or a near miss of one, is a probl
     ['"Paused" isn\'t an argument configure takes; the closest is "paused".']);
   assert.deepEqual(checkArguments(configure, { pasued: true }, tools).problems,
     ['"pasued" isn\'t an argument configure takes; the closest is "paused".']);
+  // A part of a name, at three letters or more, is a shortened attempt at it.
+  assert.deepEqual(checkArguments(configure, { paused: true, interval: 30 }, tools).problems,
+    ['"interval" isn\'t an argument configure takes; the closest is "intervalSeconds" or "intervalMinutes".']);
+  assert.deepEqual(checkArguments(configure, { Seconds: 30 }, tools).problems,
+    ['"Seconds" isn\'t an argument configure takes; the closest is "intervalSeconds".']);
   assert.deepEqual(checkArguments(list, { id: 'rem_1' }, tools).problems,
     ['"id" is cancel\'s argument, not list\'s; list takes no arguments.']);
   assert.deepEqual(checkArguments(list, { Id: 'rem_1' }, tools).problems,
@@ -52,18 +57,18 @@ test('a key like nothing here is ignored, unless it is all a tool that takes arg
     problems: ['It doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".'],
     ignored: [],
   });
-  // A name an argument's starts with is no slip, as agent-framework decides it, but it is what the result suggests.
-  assert.deepEqual(checkArguments(configure, { paused: true, interval: 30 }, tools), { problems: [], ignored: ['interval'] });
-  assert.deepEqual(checkArguments(configure, { interval: 30 }, tools).problems,
-    ['It doesn\'t take "interval"; the closest it takes is "intervalSeconds" or "intervalMinutes".']);
+  // A key that holds an argument's name is another name, usually an extra that explains it, but it is what the result suggests.
+  assert.deepEqual(checkArguments(configure, { paused: true, pausedReason: 'quiet' }, tools), { problems: [], ignored: ['pausedReason'] });
+  assert.deepEqual(checkArguments(configure, { pausedReason: 'quiet' }, tools).problems,
+    ['It doesn\'t take "pausedReason"; the closest it takes is "paused".']);
 });
 
 test('the note on ignored keys suggests what each may have meant, or names every argument', () => {
-  assert.equal(ignoredNote(configure, ['interval']),
-    'configure ignored "interval", which it doesn\'t take; the closest it takes is "intervalSeconds" or "intervalMinutes".');
-  assert.equal(ignoredNote(configure, ['interval', 'reason']),
-    'configure ignored "interval" and "reason", which it doesn\'t take; the closest to "interval" it takes is "intervalSeconds" or '
-      + '"intervalMinutes", and it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
+  assert.equal(ignoredNote(configure, ['pausedReason']),
+    'configure ignored "pausedReason", which it doesn\'t take; the closest it takes is "paused".');
+  assert.equal(ignoredNote(configure, ['pausedReason', 'reason']),
+    'configure ignored "pausedReason" and "reason", which it doesn\'t take; the closest to "pausedReason" it takes is "paused", '
+      + 'and it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
   assert.equal(ignoredNote(configure, ['reason'], true),
     'It also doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".');
 });

@@ -19,7 +19,8 @@ Every argument a tool call sends is applied, or the call is refused, changes
 nothing and names each problem at once: a value of the wrong type or out of
 range, two arguments that contradict each other, or a name the tool doesn't
 take that is a slip for one it does, or for one another of these tools takes.
-A slip is the same name ignoring case, or a few edits away. Any other name a
+A slip is the same name ignoring case, a few edits away, or a part of it of
+three letters or more, such as `mode` for `deliveryMode`. Any other name a
 tool doesn't take is ignored, and the result says so and what the tool takes,
 unless the call sends nothing else to a tool that takes arguments, which then
 refuses it. Lengths are kept to the millisecond.

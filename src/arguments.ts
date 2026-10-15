@@ -87,7 +87,7 @@ export function ignoredNote(tool: ToolSchema, ignored: readonly string[], refuse
 
 /** What the agent may have meant by keys the tool doesn't take, none of
  *  them a slip: the names closestNames still finds for each, such as
- *  "deliveryMode" for "mode", and every name it takes when one has none. */
+ *  "paused" for "pausedReason", and every name it takes when one has none. */
 function meant(tool: ToolSchema, keys: readonly string[]): string {
   const names = Object.keys(tool.inputSchema.properties);
   const closest = keys.flatMap((key) => {
@@ -220,12 +220,17 @@ export function closestNames(name: string, candidates: readonly string[], max = 
 }
 
 /**
- * Whether `name` looks like a slip for `candidate`: the same ignoring case,
- * or a few edits apart, where a transposition counts as one edit. Beyond
- * that, two names are different names rather than one mistyped.
+ * Whether `name` looks like a slip for `candidate`, ignoring case: the same;
+ * a few edits apart, where a transposition counts as one edit; or, at three
+ * characters or more, a part of it, which is a shortened attempt at it
+ * (`mode` for `deliveryMode`, `interval` for `refillIntervalMs`). Only in
+ * that direction: a name that holds the candidate is another name, usually an
+ * extra that explains it (`channel_note` beside `channel`). Beyond these, two
+ * names are different names rather than one mistyped.
  */
 export function isNearMiss(name: string, candidate: string): boolean {
   const a = name.toLowerCase(), b = candidate.toLowerCase();
+  if (a.length >= 3 && b.includes(a)) return true;
   const limit = noiseLimit(a, b);
   return editDistance(a, b, limit) <= limit;
 }
