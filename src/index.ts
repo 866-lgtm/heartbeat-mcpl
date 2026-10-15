@@ -82,17 +82,18 @@ function loadConfig(): HeartbeatConfig {
     if (existsSync(CONFIG_PATH)) {
       const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
       if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
-      // A stored interval means what heartbeat_configure would have made of it.
-      // It saves an infinite interval as null, so null means "never": it
-      // loads paused, at the default for when it's resumed. Under 60 s is
-      // raised to 60 (Math.max(60, …)). Anything else that isn't a finite
-      // number falls back to the default, since its owner wanted some
-      // interval, and a pause would stop the wake that lets the agent notice.
-      // Before, null, zero or a negative number fired the heartbeat about
-      // every millisecond.
+      // A stored interval means what heartbeat_configure made of it when it
+      // was saved. Earlier versions saved an infinite interval as null, so
+      // null means "never": it loads paused, at the default for when it's
+      // resumed. They raised one under 60 s to 60 (Math.max(60, …)), so that
+      // is how it loads; heartbeat_configure now refuses it instead. Anything
+      // else that isn't a finite number falls back to the default, since its
+      // owner wanted some interval, and a pause would stop the wake that lets
+      // the agent notice. Before, null, zero or a negative number fired the
+      // heartbeat about every millisecond.
       const stored: unknown = merged.intervalSeconds;
       if (stored === null) {
-        log(`config intervalSeconds is null, as heartbeat_configure saves an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+        log(`config intervalSeconds is null, as earlier versions of heartbeat_configure saved an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
         merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
         merged.paused = true;
       } else if (typeof stored !== 'number' || !Number.isFinite(stored)) {
@@ -101,6 +102,13 @@ function loadConfig(): HeartbeatConfig {
       } else if (stored < 60) {
         log(`config intervalSeconds ${stored} is under the 60-second floor; using 60s`);
         merged.intervalSeconds = 60;
+      } else if (!canHoldTime(Date.now() + stored * 1000)) {
+        // Earlier versions saved an interval as given, however long. One whose
+        // next heartbeat falls past the last time a Date holds meant "never",
+        // as null does, and would otherwise be armed at Infinity.
+        log(`config intervalSeconds ${stored} puts the next heartbeat past ${LAST_REMINDER_TIME}; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+        merged.paused = true;
       }
       return merged;
     }
@@ -483,8 +491,9 @@ class HeartbeatServer {
 
   /** Every argument a call sends is applied, or the call is refused, applies
    *  nothing, and names each problem at once: the schema's (checkArguments)
-   *  and the tool's own. A key no tool takes, and like none, is left out, and
-   *  the result says so. */
+   *  and the tool's own. A key that no tool here takes, and that is close to
+   *  none of their arguments, does nothing either way: an applied call's
+   *  result names it as ignored, and a refused call's names it too. */
   private handleToolCall(name: string, rawArgs: unknown) {
     const tool = toolDefinitions.find((t) => t.name === name);
     if (!tool) return this.text(`Unknown tool: ${name}`, true);
@@ -492,7 +501,7 @@ class HeartbeatServer {
     // Arguments that aren't an object are a problem named above; read them as none.
     const args = (typeof rawArgs === 'object' && rawArgs !== null && !Array.isArray(rawArgs) ? rawArgs : {}) as Record<string, unknown>;
     const result = this.callTool(name, args, problems);
-    if (ignored.length > 0) result.content[0].text += ` ${ignoredNote(tool, ignored)}`;
+    if (ignored.length > 0) result.content[0].text += ` ${ignoredNote(tool, ignored, result.isError === true)}`;
     return result;
   }
 
@@ -524,8 +533,9 @@ class HeartbeatServer {
 
   private configure(args: Record<string, unknown>, problems: string[]) {
     const interval = addUnits(args, INTERVAL_UNITS, problems);
-    if (interval && !Number.isFinite(interval.seconds)) {
-      problems.push(`${givenText(interval, ['is', 'are'])} too long to save; give a shorter interval, or pause the heartbeat with "paused": true.`);
+    if (interval && !canHoldTime(Date.now() + interval.seconds * 1000)) {
+      problems.push(`${givenText(interval, ['puts', 'put'])} the next heartbeat past ${LAST_REMINDER_TIME}, the last time it can be set for; `
+        + 'give a shorter interval, or pause the heartbeat with "paused": true.');
     } else if (interval && interval.seconds < MIN_HEARTBEAT_SECONDS) {
       problems.push(`${givenText(interval)} ${interval.seconds} s, under the heartbeat's ${MIN_HEARTBEAT_SECONDS}-second floor; `
         + `give ${MIN_HEARTBEAT_SECONDS} seconds or more, or pause it with "paused": true.`);
@@ -671,7 +681,7 @@ class HeartbeatServer {
 
     // The first fire: at the delay or atIso, else one interval out.
     const now = Date.now();
-    const first = delay ? now + delay.seconds * 1000 : at ?? (every ? now + every.seconds * 1000 : null);
+    const first = delay ? now + Math.round(delay.seconds * 1000) : at ?? (every ? now + Math.round(every.seconds * 1000) : null);
     // A delay or interval can reach past the last time a Date holds (atIso's
     // parser refuses its own). Refuse it before anything is saved: a time past
     // it can never fire, and listing it throws.

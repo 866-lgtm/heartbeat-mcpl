@@ -19,18 +19,19 @@ export interface ToolSchema {
 export interface ArgumentCheck {
   /** One sentence per argument that can't be applied, saying what to give instead. */
   problems: string[];
-  /** Keys that no tool here takes and that look like no argument this one
-   *  takes. They did nothing before and do nothing now, so the call goes on
-   *  without them, and its result names them. */
+  /** Keys that no tool here takes and that are no slip for an argument any of
+   *  them takes. They did nothing before and do nothing now: a call that is
+   *  applied goes on without them, and its result names them, as a refused
+   *  one's does. */
   ignored: string[];
 }
 
 /** Check `args` against `tool`'s schema. A key the tool doesn't take is a
- *  problem when it is a near miss of one it does, or an argument another of
- *  `tools` takes, since either way the agent believes the call did something
- *  it didn't. Any other key is ignored, unless every key sent is one, since
- *  a call to a tool that takes arguments then can only have meant something
- *  it didn't do. */
+ *  problem when it is a near miss (isNearMiss) of one it does, or of an
+ *  argument another of `tools` takes, since either way the agent believes the
+ *  call did something it didn't. Any other key is ignored, unless every key
+ *  sent is one, since a call to a tool that takes arguments then can only
+ *  have meant something it didn't do. */
 export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly ToolSchema[]): ArgumentCheck {
   const problems: string[] = [];
   const ignored: string[] = [];
@@ -38,19 +39,23 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
   const names = Object.keys(properties);
   if (typeof args !== 'object' || args === null || Array.isArray(args)) {
     problems.push(`Its arguments are ${describeValue(args)}; give an object of named arguments${names.length ? `, such as {"${names[0]}": …}` : ', or none'}.`);
+    for (const key of required) problems.push(`"${key}" is missing: ${firstSentence(properties[key].description)}`);
     return { problems, ignored };
   }
   for (const [key, value] of Object.entries(args)) {
     if (!Object.hasOwn(properties, key)) {
-      const near = closestNames(key, names);
-      const owner = tools.find((other) => other !== tool && Object.hasOwn(other.inputSchema.properties, key));
-      if (near.length === 0 && !owner) {
-        ignored.push(key);
-      } else if (owner) {
-        problems.push(`"${key}" is ${owner.name}'s argument, not ${tool.name}'s; `
-          + (near.length ? `the closest ${tool.name} takes is ${orList(near)}.` : `${takes(tool, tool.name)}.`));
+      const others = tools.filter((other) => other !== tool);
+      const theirs = [...new Set(others.flatMap((other) => Object.keys(other.inputSchema.properties)))];
+      if (names.some((name) => isNearMiss(key, name))) {
+        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, names))}.`);
+      } else if (theirs.some((name) => isNearMiss(key, name))) {
+        const meant = closestNames(key, theirs.filter((name) => isNearMiss(key, name)), 1)[0];
+        const owners = andNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`));
+        problems.push(meant === key
+          ? `"${key}" is ${owners} argument, not ${tool.name}'s; ${takes(tool, tool.name)}.`
+          : `"${key}" is close to "${meant}", ${owners} argument, not one ${tool.name} takes; ${takes(tool, tool.name)}.`);
       } else {
-        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(near)}.`);
+        ignored.push(key);
       }
       continue;
     }
@@ -58,11 +63,11 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
     if (typeof value !== schema.type) {
       problems.push(`"${key}" is ${describeValue(value)}; give ${wanted(schema, value)}.`);
     } else if (schema.enum && !schema.enum.includes(value as string)) {
-      problems.push(`"${key}" ${JSON.stringify(value)} isn't one ${tool.name} takes; give ${orList(schema.enum)}.`);
+      problems.push(`"${key}" ${JSON.stringify(value)} isn't one of its values; give ${orList(schema.enum)}.`);
     }
   }
   if (ignored.length > 0 && ignored.length === Object.keys(args).length && names.length > 0) {
-    problems.unshift(`It doesn't take ${andList(ignored)}; ${takes(tool)}.`);
+    problems.unshift(`It doesn't take ${andList(ignored)}; ${meant(tool, ignored)}.`);
     ignored.length = 0;
   }
   for (const key of required) {
@@ -71,9 +76,25 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
   return { problems, ignored };
 }
 
-/** The sentence a result ends with when it went on without some keys. */
-export function ignoredNote(tool: ToolSchema, ignored: readonly string[]): string {
-  return `${tool.name} ignored ${andList(ignored)}, which it doesn't take; ${takes(tool)}.`;
+/** The sentence a result ends with when the call sent keys that do nothing:
+ *  that they were ignored, or, when the call was refused for something else,
+ *  that it doesn't take them either. */
+export function ignoredNote(tool: ToolSchema, ignored: readonly string[], refused = false): string {
+  return refused
+    ? `It also doesn't take ${andList(ignored)}; ${meant(tool, ignored)}.`
+    : `${tool.name} ignored ${andList(ignored)}, which it doesn't take; ${meant(tool, ignored)}.`;
+}
+
+/** What the agent may have meant by keys the tool doesn't take, none of
+ *  them a slip: the names closestNames still finds for each, such as
+ *  "deliveryMode" for "mode", and every name it takes when one has none. */
+function meant(tool: ToolSchema, keys: readonly string[]): string {
+  const names = Object.keys(tool.inputSchema.properties);
+  const closest = keys.flatMap((key) => {
+    const near = closestNames(key, names);
+    return near.length ? [`the closest ${keys.length > 1 ? `to "${key}" ` : ''}it takes is ${orList(near)}`] : [];
+  });
+  return [...closest, ...(closest.length < keys.length ? [takes(tool)] : [])].join(', and ');
 }
 
 /** "it takes a, b and c", or that it takes none. */
@@ -111,8 +132,12 @@ function firstSentence(description: string): string {
 }
 
 export function andList(items: readonly string[]): string {
-  const quoted = items.map((item) => `"${item}"`);
-  return quoted.length < 2 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+  return andNames(items.map((item) => `"${item}"`));
+}
+
+/** `a`, `a and b`, or `a, b and c`, as given. */
+function andNames(items: readonly string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
 export function orList(items: readonly string[]): string {
@@ -121,7 +146,7 @@ export function orList(items: readonly string[]): string {
 }
 
 /** A length given in units that add up: each argument given with its value,
- *  and the total in whole seconds. */
+ *  and the total in seconds, to the millisecond, the timers' own resolution. */
 export interface Length { given: Array<[string, number]>; seconds: number; }
 
 /** Add up the units of `units` ([argument, seconds per unit]) given in `args`.
@@ -143,7 +168,7 @@ export function addUnits(
     given.push([name, value]);
     seconds += value * perUnit;
   }
-  return given.length && !negative ? { given, seconds: Math.round(seconds) } : null;
+  return given.length && !negative ? { given, seconds: Math.round(seconds * 1000) / 1000 } : null;
 }
 
 /** `"inHours" 1 and "inMinutes" 30`, as the agent gave them. */
@@ -158,14 +183,20 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
 }
 
 /**
- * The names someone most likely meant, when the one they gave matches none,
- * ranked as agent-framework's closest-names helper ranks them, so the house's
- * refusals agree on what counts as a near miss. Case is ignored. A candidate
- * that starts with the name or that it starts with, then one that contains it
- * or that it contains, ranks ahead of one that is only a few edits away. The
- * prefix and substring matches need three characters on the shorter side.
- * Past the edits a slip allows, a candidate is noise, so a name close to
- * nothing gets nothing back.
+ * The names someone most likely meant, when the one they gave matches none:
+ * for a refusal's or a note's "the closest is". This, isNearMiss, noiseLimit
+ * and editDistance are agent-framework's closest-names helper
+ * (src/closest-names.ts), copied unchanged rather than imported, since it
+ * isn't published, so the house's tools agree on what counts as a slip and
+ * on what they suggest.
+ *
+ * Case is ignored. A candidate that the name matches as a whole `--` segment
+ * ("ls" for "workspace--ls"), then one that starts with it or that it starts
+ * with, then one that contains it or that it contains, ranks ahead of one
+ * that is only a few edits away. The prefix and substring matches need three
+ * characters on the shorter side, since a letter or two is in nearly every
+ * name. Past the edits isNearMiss allows, a candidate is noise, so a name
+ * close to nothing gets nothing back.
  */
 export function closestNames(name: string, candidates: readonly string[], max = 2): string[] {
   const wanted = name.toLowerCase();
@@ -174,28 +205,49 @@ export function closestNames(name: string, candidates: readonly string[], max = 
     const other = candidate.toLowerCase();
     const shorter = Math.min(wanted.length, other.length);
     const tier = other === wanted ? 0
-      : shorter >= 3 && (other.startsWith(wanted) || wanted.startsWith(other)) ? 1
-      : shorter >= 3 && (other.includes(wanted) || wanted.includes(other)) ? 2
-      : 3;
-    const limit = tier === 3 ? noiseLimit(wanted, other) : Infinity;
+      : wanted && other.split('--').includes(wanted) ? 1
+      : shorter >= 3 && (other.startsWith(wanted) || wanted.startsWith(other)) ? 2
+      : shorter >= 3 && (other.includes(wanted) || wanted.includes(other)) ? 3
+      : 4;
+    const limit = tier === 4 ? noiseLimit(wanted, other) : Infinity;
     const distance = editDistance(wanted, other, limit);
     if (distance > limit) continue;
     ranked.push({ candidate, tier, distance });
   }
+  // A stable sort: candidates that tie keep the order they were given in.
   ranked.sort((a, b) => a.tier - b.tier || a.distance - b.distance);
   return ranked.slice(0, Math.max(0, max)).map((entry) => entry.candidate);
 }
 
-/** The most edits that still read as a slip: a quarter of what follows the
- *  prefix the two names share, and at least one. */
+/**
+ * Whether `name` looks like a slip for `candidate`: the same ignoring case,
+ * or a few edits apart, where a transposition counts as one edit. Beyond
+ * that, two names are different names rather than one mistyped.
+ */
+export function isNearMiss(name: string, candidate: string): boolean {
+  const a = name.toLowerCase(), b = candidate.toLowerCase();
+  const limit = noiseLimit(a, b);
+  return editDistance(a, b, limit) <= limit;
+}
+
+/**
+ * The most edits that still read as a slip: a quarter of what follows the
+ * prefix the two names share, and at least one. A shared prefix is mostly a
+ * namespace (`workspace--`, `mcpl--discord--`) and says nothing about the
+ * rest, so `workspace--read` and `workspace--write` are four edits apart in
+ * a four-letter tool name, not in a fifteen-letter one.
+ */
 function noiseLimit(a: string, b: string): number {
   let shared = 0;
   while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared++;
   return Math.max(1, Math.floor((Math.max(a.length, b.length) - shared) / 4));
 }
 
-/** Edits between two strings, with a swap of neighbours counting as one
- *  (optimal string alignment). Past `limit`, it answers `limit + 1`. */
+/**
+ * Edits between two strings: insertions, deletions, substitutions and
+ * swaps of neighbours (optimal string alignment). Past `limit` the exact
+ * count doesn't matter, so it answers `limit + 1` as soon as it is sure.
+ */
 function editDistance(a: string, b: string, limit: number): number {
   if (Math.abs(a.length - b.length) > limit) return limit + 1;
   let before: number[] = [];
@@ -210,6 +262,7 @@ function editDistance(a: string, b: string, limit: number): number {
       current.push(value);
       best = Math.min(best, value);
     }
+    // No row's smallest entry is below the one before it, so none later can come back under the limit.
     if (best > limit) return limit + 1;
     before = previous;
     previous = current;
