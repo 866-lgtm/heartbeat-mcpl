@@ -44,6 +44,16 @@ that sends its policy only as a Notification, no wake is ever delivered, and
 no wake can be delivered, the log says how many reminders won't fire and why,
 at start and at each policy change, add and cancel.
 
+A reminder changes only when the host answers its push: a one-shot the host
+took is removed, and a recurring one advances. One the host refused, or whose
+push failed or wasn't answered within 30 s, stays as it was. `reminder_list`
+shows it with the reason, and it is tried once more at the host's next policy
+change, the next `reminder_add` or `reminder_cancel`, or a restart. A reminder
+whose answer is still out when the server stops is still in the file, so it
+fires again at the next start. Where the server can't tell whether the host
+took a push, the reminder is sent again rather than lost, so the agent may hear
+it twice.
+
 ## Silent mode
 
 A silent tick is an empty `push/event` carrying the host's silent-heartbeat
