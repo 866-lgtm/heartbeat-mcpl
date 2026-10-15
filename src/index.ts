@@ -211,6 +211,11 @@ class HeartbeatServer {
   /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
    *  Until then every capability-dependent behavior is unavailable. */
   private policyReady = false;
+  /** Whether the host's first Request-form featureSets/update has arrived.
+   *  Reminders wait for it: one that fell due while the server was down would
+   *  otherwise fire before the host had said whether a push may go out, and
+   *  be lost. */
+  private policyArrived = false;
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
@@ -219,7 +224,8 @@ class HeartbeatServer {
     this.conn = conn;
     await this.handleInitialize();
     this.reschedule();
-    this.scheduleReminders(); // reminders loaded from disk resume here (restart-survival)
+    // Reminders loaded from disk resume once the host's first policy arrives
+    // (handleFeatureSetsUpdateRequest), saying whether their pushes may go out.
     try {
       while (!conn.isClosed) {
         const msg = await conn.nextMessage();
@@ -327,6 +333,14 @@ class HeartbeatServer {
     }
     for (const note of receipt.notes ?? []) log(`receipt note: ${note}`);
     conn.sendResponse(req.id, receipt);
+    if (!this.policyArrived) {
+      // Restart-survival: reminders loaded from disk, overdue ones included,
+      // start once the host has said whether a push may go out. One that
+      // falls due while the policy blocks pushes is dropped with a log line,
+      // as the host chose.
+      this.policyArrived = true;
+      this.scheduleReminders();
+    }
   }
 
   /**
@@ -614,11 +628,12 @@ class HeartbeatServer {
   }
 
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all
-   *  reminders; it re-arms after each fire. */
+   *  reminders; it re-arms after each fire. Until the host's first policy
+   *  arrives, nothing is armed. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
-    if (this.reminders.length === 0) return;
+    if (!this.policyArrived || this.reminders.length === 0) return;
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
     this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
   }
