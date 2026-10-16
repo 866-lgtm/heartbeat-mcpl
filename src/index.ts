@@ -394,13 +394,12 @@ class HeartbeatServer {
     // Once the host has gone, nothing may be armed: a reminder that can't be
     // sent stays due, and arming it would wake the process every millisecond.
     // A push still out when the host goes away fails, and its answer calls
-    // scheduleReminders, as every answer does; this guard keeps that from
-    // arming anything. With mcpl-core 0.2.1 that answer settles after serve has
-    // ended, which `!this.conn` covers. isClosed covers it settling once the
-    // connection has closed but before serve ends, so nothing is armed or sent
-    // into a closed connection meanwhile. Which comes first depends on the
-    // promise steps on both sides, mcpl-core's among them, so this code alone
-    // doesn't fix it.
+    // scheduleReminders; this guard keeps that from arming anything. With
+    // mcpl-core 0.2.1 that answer settles after serve has ended, which
+    // `!this.conn` covers. isClosed covers it settling once the connection has
+    // closed but before serve ends, so nothing is armed or sent into a closed
+    // connection meanwhile. Which comes first depends on the promise steps on
+    // both sides, mcpl-core's among them, so this code alone doesn't fix it.
     if (!this.conn || this.conn.isClosed) return 'the connection to the host has closed';
     if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
     if (this.notificationOnly) {

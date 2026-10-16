@@ -52,6 +52,9 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = connected(() => undefined);
   t.after(c.close);
+  // The connection's own default is no timeout here, so only the bound that
+  // sendPush gives can end the wait, whatever mcpl-core's default is.
+  c.server.requestTimeout = 0;
   let refusal: string | null | undefined;
   void sendPush(c.server, params).then((outcome) => { refusal = outcome.refusal; });
   const flush = () => new Promise((resolve) => setImmediate(resolve));
