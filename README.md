@@ -42,7 +42,8 @@ can, a recurring one once for the periods it missed. `reminder_list` shows it
 that sends its policy only as a Notification, no wake is ever delivered, and
 `reminder_add` and `reminder_list` say that no reminder will fire there. While
 no wake can be delivered, the log says how many reminders won't fire and why,
-at start and at each policy change, add and cancel.
+at start, at each policy change, add and cancel, and when the host answers a
+reminder's push.
 
 A reminder changes only when the host takes its push: a one-shot the host took
 is removed, and a recurring one advances. One the host refused, or whose push

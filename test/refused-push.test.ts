@@ -81,7 +81,7 @@ test('a recurring reminder whose push the host refuses stays at its due time, an
   assert.deepEqual(h.stored(), [{ ...seeded, fireAt: fireAt + 3_600_000 }], 'taken, it is next due an hour after the time the host refused');
 });
 
-test('a refused reminder is tried once more at a Notification and at a cancel, and a malformed Request clears its refusal', async (t) => {
+test('a refused reminder is tried once more at a Notification and at a cancel, not at a malformed Notification, and a malformed Request clears its refusal', async (t) => {
   const fireAt = Date.now() - 1000;
   const h = await serverWithHost((p) => (origin(p).reminderId === 'rem_once' ? { result: { accepted: false, reason: 'busy' } } : {}),
     { reminders: [row('rem_once', fireAt, null), row('rem_other', Date.now() + 3_600_000, null)] });
@@ -96,6 +96,12 @@ test('a refused reminder is tried once more at a Notification and at a cancel, a
   await refusedAgain(2, 'tried again at a Notification');
   await h.call('reminder_cancel', { id: 'rem_other' });
   await refusedAgain(3, 'and at a cancel');
+  // A malformed Notification is ignored, so it updates nothing and retries nothing.
+  h.notify('featureSets/update', { ...POLICY, enabled: 'heartbeat' });
+  assert.match(await h.call('reminder_list'), /^rem_once \| .*\(overdue; the host refused it: busy, at /m, 'still refused after a malformed Notification');
+  // Long enough for a reminder re-armed by it to have been pushed.
+  await sleep(300);
+  assert.equal(h.pushes.length, 3, 'and not pushed again');
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
   // No wake can be delivered under a malformed policy, so it waits for one, like any due reminder.
   assert.match(await h.call('reminder_list'), /^rem_once \| next .* \(overdue\) \| one-shot/m, 'a malformed Request is a policy update too');
@@ -152,6 +158,7 @@ test('a crash with one push out and one refused loses neither: the next start tr
   assert.deepEqual(second.pushes.map((p) => origin(p).reminderId).sort(), ['rem_out', 'rem_refused'], 'both fire at the next start');
   await listed(second, /^1 reminder\(s\):\nrem_refused \| next .* \(~\d+s\)/);
   assert.deepEqual(second.stored(), [{ ...rows[1]!, fireAt: fireAt + 3_600_000 }], 'and once taken, the one-shot is gone and the recurring one advances');
+  assert.equal(second.pushes.length, 2, 'each was pushed once');
 });
 
 test('a host that goes away while a push is out loses no reminder, and leaves nothing armed, so the server exits', async (t) => {

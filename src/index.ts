@@ -393,10 +393,14 @@ class HeartbeatServer {
   private pushBlockedReason(): string | null {
     // Once the host has gone, nothing may be armed: a reminder that can't be
     // sent stays due, and arming it would wake the process every millisecond.
-    // A push still out when the host goes away fails, and its answer re-arms.
-    // With mcpl-core 0.2.1 that answer settles after serve has ended, which
-    // `!this.conn` covers; isClosed covers it settling once the connection has
-    // closed but before serve ends. Which comes first is mcpl-core's to decide.
+    // A push still out when the host goes away fails, and its answer calls
+    // scheduleReminders, as every answer does; this guard keeps that from
+    // arming anything. With mcpl-core 0.2.1 that answer settles after serve has
+    // ended, which `!this.conn` covers. isClosed covers it settling once the
+    // connection has closed but before serve ends, so nothing is armed or sent
+    // into a closed connection meanwhile. Which comes first depends on the
+    // promise steps on both sides, mcpl-core's among them, so this code alone
+    // doesn't fix it.
     if (!this.conn || this.conn.isClosed) return 'the connection to the host has closed';
     if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
     if (this.notificationOnly) {
@@ -691,8 +695,9 @@ class HeartbeatServer {
    *  yet, a malformed one, or one that denies wakes), nothing is armed, and a due
    *  reminder waits, overdue, rather than being pushed into nothing and
    *  removed. It runs at start, at each policy update, add and cancel, after
-   *  a fire, and at each answer to a reminder's push, never on a timer of its
-   *  own, so its log line for held reminders comes once for each of those. */
+   *  a fire, and when the host answers the push of a reminder still listed,
+   *  never on a timer of its own, so its log line for held reminders comes
+   *  once for each of those. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
@@ -752,7 +757,8 @@ class HeartbeatServer {
    *  a one-shot is removed, and a recurring one advances to its next future
    *  time. Refused, or the push failed: it stays as it was, and is marked
    *  refused until the next retryRefused or restart. Cancelled while its push
-   *  was out: it stays gone. Every answer re-arms. */
+   *  was out: it stays gone, and nothing is re-armed, since the cancel was. Any
+   *  other answer re-arms. */
   private settleReminder(id: string, refusal: string | null): void {
     this.inFlight.delete(id);
     const i = this.reminders.findIndex((r) => r.id === id);
