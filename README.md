@@ -53,7 +53,7 @@ update, the next `reminder_add` or `reminder_cancel`, or a restart. Until the
 host takes it, the reminders file holds it as it was, so one whose push is
 still out when the server stops, or crashes, fires again at the next start. If
 the host had in fact taken such a push, or took one but answered after 30 s,
-the agent hears that reminder twice.
+the agent hears that reminder a second time when it is sent again.
 
 ## Silent mode
 

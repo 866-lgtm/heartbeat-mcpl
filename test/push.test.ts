@@ -34,9 +34,11 @@ function connected(answer: () => { error?: [number, string]; result?: unknown } 
   return { server, host, close: () => { host.close(); server.close(); } };
 }
 
-test('each answer is told apart: taken, refused with or without a reason, or an error', async (t) => {
+test('each answer is told apart: taken, refused with or without a reason, or an error; only accepted: false refuses', async (t) => {
   const cases: Array<[string, { error?: [number, string]; result?: unknown }, string | null]> = [
     ['taken', { result: { accepted: true, inferenceId: 'i' } }, null],
+    ['an answer that says nothing of accepted', { result: {} }, null],
+    ['a null answer', { result: null }, null],
     ['refused with a reason', { result: { accepted: false, reason: 'busy' } }, 'the host refused it: busy'],
     ['refused without one', { result: { accepted: false } }, 'the host refused it'],
     ['an error answer', { error: [-32001, 'Feature set not enabled: heartbeat'] }, 'the push failed: Feature set not enabled: heartbeat'],

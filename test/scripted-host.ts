@@ -37,7 +37,9 @@ export async function serverWithHost(
   });
   let stderr = '';
   child.stderr.on('data', (b) => { stderr += String(b); });
-  const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()));
+  // 'close' comes once the process has exited and its output has all been
+  // read, so a test that reads stderr after it sees every line.
+  const exited = new Promise<void>((resolve) => child.on('close', () => resolve()));
   const conn = McplConnection.fromStreams(child.stdout, child.stdin);
   const pushes: PushEventParams[] = [];
   const pushWaiters: Array<() => void> = [];
@@ -80,10 +82,10 @@ export async function serverWithHost(
   const settle = () => new Promise((r) => setTimeout(r, 200));
   const close = () => { conn.close(); child.kill(); rmSync(dir, { recursive: true, force: true }); };
   /** Close the host's end of the connection, as a host that goes away does,
-   *  and resolve when the server's process exits. */
+   *  and resolve when the server's process has exited and its log is read. */
   const hangUp = () => { conn.close(); return exited; };
   /** Kill the server's process at once, as a crash does, and resolve when it
-   *  has exited. */
+   *  has exited and its log is read. */
   const crash = () => { child.kill('SIGKILL'); return exited; };
   const stored = () => JSON.parse(readFileSync(remindersFile, 'utf8')) as Array<Record<string, unknown>>;
   return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp, crash };

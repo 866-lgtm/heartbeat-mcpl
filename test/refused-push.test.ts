@@ -135,9 +135,11 @@ test('until the host answers, a reminder is sent and waiting, and unchanged in t
   answer.get('rem_hourly')!({});
   await listed(h, /^rem_hourly \| next .* \(~\d+s\)/m);
   assert.doesNotMatch(await h.call('reminder_list'), /rem_once/, 'cancelled while its push was out, the host taking it changes nothing');
-  assert.doesNotMatch(h.stderr(), /handling the host's answer/, 'and answering it throws nothing');
   assert.deepEqual(h.stored(), [{ ...rows[1]!, fireAt: fireAt + 3_600_000 }], 'taken, the recurring one advances from its own time');
   assert.equal(h.pushes.length, 3);
+  // Read once the server has gone and its log has all been read.
+  await h.hangUp();
+  assert.doesNotMatch(h.stderr(), /handling the host's answer/, 'and answering it throws nothing');
 });
 
 test('a crash with one push out and one refused loses neither: the next start tries both again', async (t) => {

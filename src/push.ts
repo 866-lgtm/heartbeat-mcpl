@@ -1,10 +1,11 @@
 /**
  * Sending a push/event and reading what came of it.
  *
- * A reminder waits on its push's answer (see processDueReminders), so the
- * answer has to come or the push has to fail: a push the host never answers
- * fails after PUSH_ANSWER_TIMEOUT_MS. The bound is given here rather than left
- * to mcpl-core's default, because what happens to a reminder depends on it.
+ * A reminder waits on its push's answer (see fireReminder and settleReminder
+ * in index.ts), so the answer has to come or the push has to fail: a push the
+ * host never answers fails after PUSH_ANSWER_TIMEOUT_MS. The bound is given
+ * here rather than left to mcpl-core's default, because what happens to a
+ * reminder depends on it.
  */
 import { RpcError, method } from '@animalabs/mcpl-core';
 import type { McplConnection, PushEventParams } from '@animalabs/mcpl-core';
