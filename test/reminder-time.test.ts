@@ -73,12 +73,13 @@ test('a repeated hour names the agent zone and both values to copy', () => {
   );
 });
 
+const londonFold = {
+  message: '"atIso" "2024-10-27T01:30:00" happens twice in Europe/London, where the clocks go back over it. '
+    + 'End it with the offset you mean: "2024-10-27T01:30:00+01:00" or "2024-10-27T01:30:00+00:00".',
+};
+
 test('a repeated hour whose later offset is zero names it as +00:00', () => {
-  assert.throws(
-    () => parseReminderTime('2024-10-27T01:30:00', 'Europe/London'),
-    (error: Error) => /happens twice/.test(error.message)
-      && error.message.includes('"2024-10-27T01:30:00+01:00" or "2024-10-27T01:30:00+00:00"'),
-  );
+  assert.throws(() => parseReminderTime('2024-10-27T01:30:00', 'Europe/London'), londonFold);
 });
 
 test('a zero offset that Intl names as bare GMT is labelled +00:00', (t) => {
@@ -88,10 +89,7 @@ test('a zero offset that Intl names as bare GMT is labelled +00:00', (t) => {
     return formatToParts.call(this, date).map((part) => (
       part.type === 'timeZoneName' && part.value === 'GMT+00:00' ? { ...part, value: 'GMT' } : part));
   });
-  assert.throws(
-    () => parseReminderTime('2024-10-27T01:30:00', 'Europe/London'),
-    (error: Error) => error.message.includes('"2024-10-27T01:30:00+01:00" or "2024-10-27T01:30:00+00:00"'),
-  );
+  assert.throws(() => parseReminderTime('2024-10-27T01:30:00', 'Europe/London'), londonFold);
 });
 
 test('an offset name Intl gives that this code cannot read is refused, never read as UTC', (t) => {
@@ -110,8 +108,8 @@ test('an offset name Intl gives that this code cannot read is refused, never rea
 test('a time a permanent offset decrease repeats is refused with both offsets', () => {
   assert.throws(
     () => parseReminderTime('2014-10-26T01:30:00', 'Europe/Moscow'),
-    (error: Error) => /happens twice/.test(error.message)
-      && error.message.includes('"2014-10-26T01:30:00+04:00" or "2014-10-26T01:30:00+03:00"'),
+    { message: '"atIso" "2014-10-26T01:30:00" happens twice in Europe/Moscow, where the clocks go back over it. '
+      + 'End it with the offset you mean: "2014-10-26T01:30:00+04:00" or "2014-10-26T01:30:00+03:00".' },
   );
 });
 
@@ -127,15 +125,17 @@ test('a skipped hour is refused rather than shifted, with the offsets on either 
 test('a half-hour repeated interval is refused with its actual offsets', () => {
   assert.throws(
     () => parseReminderTime('2024-04-07T01:45:00', 'Australia/Lord_Howe'),
-    (error: Error) => /happens twice/.test(error.message)
-      && error.message.includes('"2024-04-07T01:45:00+11:00" or "2024-04-07T01:45:00+10:30"'),
+    { message: '"atIso" "2024-04-07T01:45:00" happens twice in Australia/Lord_Howe, where the clocks go back over it. '
+      + 'End it with the offset you mean: "2024-04-07T01:45:00+11:00" or "2024-04-07T01:45:00+10:30".' },
   );
 });
 
-test('a half-hour skipped interval is refused', () => {
+test('a half-hour skipped interval is refused, with the offsets on either side to copy', () => {
   assert.throws(
     () => parseReminderTime('2024-10-06T02:15:00', 'Australia/Lord_Howe'),
-    /doesn't exist in Australia\/Lord_Howe/,
+    { message: '"atIso" "2024-10-06T02:15:00" doesn\'t exist in Australia/Lord_Howe, where the clocks skip over it. '
+      + 'Give a time that exists there, or end it with an offset to say which instant you mean, '
+      + 'like "2024-10-06T02:15:00+10:30" or "2024-10-06T02:15:00+11:00".' },
   );
 });
 
@@ -156,10 +156,12 @@ test('a date alone whose midnight the zone repeats is refused, naming that midni
   );
 });
 
-test('an entire skipped calendar date is refused', () => {
+test('an entire skipped calendar date is refused, with the offsets on either side to copy', () => {
   assert.throws(
     () => parseReminderTime('2011-12-30T12:00:00', 'Pacific/Apia'),
-    /doesn't exist in Pacific\/Apia/,
+    { message: '"atIso" "2011-12-30T12:00:00" doesn\'t exist in Pacific/Apia, where the clocks skip over it. '
+      + 'Give a time that exists there, or end it with an offset to say which instant you mean, '
+      + 'like "2011-12-30T12:00:00-10:00" or "2011-12-30T12:00:00+14:00".' },
   );
 });
 
@@ -170,6 +172,17 @@ test('malformed or out-of-range explicit offsets are refused, naming the offset 
       { message: `"atIso" "2024-07-15T09:00:00${offset}" ends in "${offset}", which isn't a UTC offset. `
         + 'End it with Z for UTC, or an offset like +05:30, +0530 or +05.' },
     );
+  }
+});
+
+test('an offset this doesn\'t read is refused before the day or the clock, so no time offered to copy keeps it', () => {
+  for (const [time, offset] of [
+    ['2030-02-30T09:00+25:00', '+25:00'], ['2030-07-15T25:00+5:30', '+5:30'], ['+275760-09-14T00:00+99:99', '+99:99'],
+  ]) {
+    assert.throws(() => parseReminderTime(time, 'UTC'), {
+      message: `"atIso" "${time}" ends in "${offset}", which isn't a UTC offset. `
+        + 'End it with Z for UTC, or an offset like +05:30, +0530 or +05.',
+    }, time);
   }
 });
 
@@ -187,8 +200,22 @@ test('out-of-range clock fields are refused, with an example that keeps the offs
   ]) {
     assert.throws(() => parseReminderTime(time, 'America/New_York'), {
       message: `"atIso" "${time}" has a time no clock shows: hours run 00 to 23 and minutes and seconds 00 to 59, `
-        + `and 24:00 is allowed only exactly, as the end of the day. Give one like ${example}.`,
+        + `and 24:00, the end of the day, takes no minutes, seconds or milliseconds after it. Give one like ${example}.`,
     }, time);
+  }
+});
+
+test('a time offered to copy for a day or a clock time is one atIso accepts, in the zone the refusal names', () => {
+  for (const [time, zone] of [
+    ['2024-02-30T09:00:00', 'America/New_York'], ['2100-02-29T09:00+01:00', 'UTC'], ['2024-04-31T09:00Z', 'Asia/Kolkata'],
+    ['2024-07-15T25:00', 'America/New_York'], ['2024-07-15T24:00:01', 'Europe/Berlin'], ['2024-07-15T09:60:00-04:00', 'UTC'],
+    ['2024-07-15T09:00:60+05:30', 'America/New_York'],
+  ]) {
+    let message = '';
+    try { parseReminderTime(time, zone); } catch (error) { message = (error as Error).message; }
+    const copy = /like ("[^"]+")/.exec(message)?.[1];
+    assert.ok(copy, `${time}: ${message}`);
+    assert.doesNotThrow(() => parseReminderTime(JSON.parse(copy), zone), `${time} offers ${copy}`);
   }
 });
 

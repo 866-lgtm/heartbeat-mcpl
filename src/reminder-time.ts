@@ -39,8 +39,8 @@ function offsetMilliseconds(offset: string): number | null {
 /** Read wall times in the agent zone, while explicit offsets name their own instant.
  *  A date alone is midnight in the agent zone. A gap or repeated wall time requires
  *  the caller to choose a time or offset. Each refusal quotes what was sent and
- *  gives a form to copy, built from it where that helps; reminder_add opens it
- *  with "no reminder was set". */
+ *  says what to give instead, with a form to copy where one helps; reminder_add
+ *  opens it with "no reminder was set". */
 export function parseReminderTime(atIso: string, timeZone: string): number {
   const shown = JSON.stringify(atIso);
   const parts = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-][\d:]+)?)?$/.exec(atIso);
@@ -49,6 +49,13 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
     throw new Error(`"atIso" ${shown} isn't a time this tool reads. Give a date and time like "2030-07-15T09:00", read in `
       + `${timeZone}, or end it with an offset, like "2030-07-15T09:00Z" or "2030-07-15T09:00+01:00". A date alone is `
       + `midnight in ${timeZone}. For a delay from now, give inSeconds, inMinutes or inHours instead.`);
+  }
+  // The offset is checked first, so a time offered to copy below keeps only an
+  // offset this reads.
+  const givenOffset = parts[8] ? offsetMilliseconds(parts[8]) : null;
+  if (parts[8] && givenOffset === null) {
+    throw new Error(`"atIso" ${shown} ends in ${JSON.stringify(parts[8])}, which isn't a UTC offset. `
+      + 'End it with Z for UTC, or an offset like +05:30, +0530 or +05.');
   }
   const calendarDate = `${parts[1]}-${parts[2]}-${parts[3]}`;
   // A time to copy means what the agent meant: it keeps the agent's own offset,
@@ -62,7 +69,7 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   // A Date keeps milliseconds, so digits past them don't count.
   if (!isClockTime(+(parts[4] ?? 0), +(parts[5] ?? 0), +(parts[6] ?? 0), +(parts[7] ?? '0').slice(0, 3))) {
     throw new Error(`"atIso" ${shown} has a time no clock shows: hours run 00 to 23 and minutes and seconds 00 to 59, `
-      + `and 24:00 is allowed only exactly, as the end of the day. Give one like ${example(`${calendarDate}T09:00`)}.`);
+      + `and 24:00, the end of the day, takes no minutes, seconds or milliseconds after it. Give one like ${example(`${calendarDate}T09:00`)}.`);
   }
   const outOfRange = new Error(`"atIso" ${shown}${readIn ? `${readIn},` : ''} is outside the times a reminder can hold, `
     + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}. Give a time inside that range.`);
@@ -71,13 +78,8 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   const wall = Date.parse(`${calendarDate}T${parts[4] ?? '00'}:${parts[5] ?? '00'}:${parts[6] ?? '00'}.${(parts[7] ?? '0').slice(0, 3).padEnd(3, '0')}Z`);
   if (!Number.isFinite(Date.parse(`${calendarDate}T00:00:00Z`)) || !Number.isFinite(wall)) throw outOfRange;
 
-  if (parts[8]) {
-    const offset = offsetMilliseconds(parts[8]);
-    if (offset === null) {
-      throw new Error(`"atIso" ${shown} ends in ${JSON.stringify(parts[8])}, which isn't a UTC offset. `
-        + 'End it with Z for UTC, or an offset like +05:30, +0530 or +05.');
-    }
-    const instant = wall - offset;
+  if (givenOffset !== null) {
+    const instant = wall - givenOffset;
     if (Math.abs(instant) > MAX_DATE_MS) throw outOfRange;
     return instant;
   }

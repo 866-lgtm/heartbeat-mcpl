@@ -53,15 +53,38 @@ test('the feature-set state is read only once the host has sent its policy', () 
   assert.equal(read, 0);
 });
 
-test('a due reminder waits until a wake can be delivered, unless none ever can on this host', () => {
-  const denied = wakeBlocked(true, false, true, state({ active: false, missing: ['pushEvents'], reason: 'capability_denied' }), 'heartbeat')!;
-  assert.equal(heldNote(denied, false), "No wake can be delivered now, because the host hasn't granted this server what its wakes need. "
-    + "A reminder that falls due waits until one can. If that doesn't change, ask whoever runs this host.");
-  assert.equal(heldNote(denied, true), "No wake can be delivered now, because the host hasn't granted this server what its wakes need, "
-    + "so it waits until one can. If that doesn't change, ask whoever runs this host.");
-  const mcpOnly = wakeBlocked(false, false, false, state({ active: false, missing: [] }), 'heartbeat')!;
-  assert.equal(heldNote(mcpOnly, false), "No wake can be delivered on this host, because the host doesn't support the push events "
-    + `wakes need, so no reminder will fire here. ${ask}`);
-  assert.equal(heldNote(mcpOnly, true), "No wake can be delivered on this host, because the host doesn't support the push events "
-    + `wakes need, so it won't fire here. ${ask}`);
+test('each kind of block gives a held reminder its own note, in the listing and for the one just set', () => {
+  const later = " If that doesn't change, ask whoever runs this host.";
+  const cases: Array<[boolean, boolean, boolean, FeatureSetState, string, string]> = [
+    [true, false, false, { active: false, missing: [] },
+      "No wake can be delivered now, because the host hasn't finished setting this server up, or its last settings message was "
+        + `malformed. A reminder that falls due waits until one can.${later}`,
+      "No wake can be delivered now, because the host hasn't finished setting this server up, or its last settings message was "
+        + `malformed, so it waits until one can.${later}`],
+    [true, false, true, { active: false, missing: ['pushEvents'], reason: 'capability_denied' },
+      `No wake can be delivered now, because the host hasn't granted this server what its wakes need. A reminder that falls due waits until one can.${later}`,
+      `No wake can be delivered now, because the host hasn't granted this server what its wakes need, so it waits until one can.${later}`],
+    [true, false, true, { active: false, missing: [], reason: 'host_disabled' },
+      `No wake can be delivered now, because the host has turned heartbeat off for this server. A reminder that falls due waits until one can.${later}`,
+      `No wake can be delivered now, because the host has turned heartbeat off for this server, so it waits until one can.${later}`],
+    [true, false, true, { active: false, missing: [], reason: 'not_enabled' },
+      `No wake can be delivered now, because the host hasn't enabled heartbeat for this server. A reminder that falls due waits until one can.${later}`,
+      `No wake can be delivered now, because the host hasn't enabled heartbeat for this server, so it waits until one can.${later}`],
+    [false, false, false, { active: false, missing: [] },
+      `No wake can be delivered on this host, because the host doesn't support the push events wakes need, so no reminder will fire here. ${ask}`,
+      `No wake can be delivered on this host, because the host doesn't support the push events wakes need, so it won't fire here. ${ask}`],
+    [true, true, false, { active: false, missing: [] },
+      `No wake can be delivered on this host, because the host set this server up in an older form that can't turn wakes on, so no reminder will fire here. ${ask}`,
+      `No wake can be delivered on this host, because the host set this server up in an older form that can't turn wakes on, so it won't fire here. ${ask}`],
+    [true, false, true, { active: false, missing: [], reason: 'invalid_uses' },
+      "No wake can be delivered on this host, because this server's own heartbeat declaration is malformed, so no reminder will fire here. "
+        + "Calling again won't change that; ask whoever runs this host to report it to heartbeat-mcpl's maintainers.",
+      "No wake can be delivered on this host, because this server's own heartbeat declaration is malformed, so it won't fire here. "
+        + "Calling again won't change that; ask whoever runs this host to report it to heartbeat-mcpl's maintainers."],
+  ];
+  for (const [mcpl, notified, ready, s, listed, one] of cases) {
+    const blocked = wakeBlocked(mcpl, notified, ready, state(s), 'heartbeat')!;
+    assert.equal(heldNote(blocked, false), listed, blocked.log);
+    assert.equal(heldNote(blocked, true), one, blocked.log);
+  }
 });

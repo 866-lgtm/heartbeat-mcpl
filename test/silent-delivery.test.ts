@@ -101,7 +101,7 @@ test('end to end: a host refusing the empty push gets the tick in message mode, 
   assert.equal(h.pushes[2]!.payload.content.length, 0, 'every tick tries silent first');
   assert.equal(h.pushes[3]!.payload.content.length, 1);
   assert.equal(h.stderr().match(/WARNING: the host refused the silent heartbeat/g)?.length, 1, 'explained once per process');
-  assert.match(await h.call('heartbeat_status'), /mode=silent \(the host refused the last silent wake, which carries no text, so heartbeats arrive as messages\. Setting deliveryMode again won't change that; ask whoever runs this host if you need them silent\) \|/);
+  assert.match(await h.call('heartbeat_status'), /mode=silent \(the host refused a silent wake, which carries no text, so heartbeats arrive as messages\. Setting deliveryMode again won't change that; ask whoever runs this host if you need them silent\) \|/);
 });
 
 test('end to end: a host that accepts the silent marker gets no fallback', async (t) => {

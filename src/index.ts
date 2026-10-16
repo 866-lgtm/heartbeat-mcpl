@@ -29,7 +29,7 @@ import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime
 import { callAt } from './timer.js';
 import { HOST_GONE, heldNote, wakeBlocked } from './wake-blocked.js';
 import type { WakeBlocked } from './wake-blocked.js';
-import { noSuchTool, toolThrew } from './call-texts.js';
+import { describeThrown, noSuchTool, toolThrew } from './call-texts.js';
 import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
@@ -232,7 +232,7 @@ const toolDefinitions: ToolDefinition[] = [
       everyMinutes: { type: 'number', description: 'Repeat every N minutes. Adds to everySeconds and everyHours.' },
       everyHours: { type: 'number', description: 'Repeat every N hours. Adds to everySeconds and everyMinutes.' },
     }, required: ['message'] } },
-  { name: 'reminder_list', description: 'List your pending reminders (id, next fire time, recurrence, message).',
+  { name: 'reminder_list', description: 'List your pending reminders (id, when each is due, recurrence, message).',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'reminder_cancel', description: 'Cancel a reminder by its id (from reminder_add / reminder_list).',
     inputSchema: { type: 'object', properties: {
@@ -351,9 +351,7 @@ class HeartbeatServer {
     } catch (e) {
       // A tool that threw may have changed something first, so the agent is
       // told to look before it calls again. Other methods aren't the agent's.
-      conn.sendError(req.id, -32000, req.method === 'tools/call'
-        ? toolThrew(params.name, e)
-        : e instanceof Error ? e.message : String(e));
+      conn.sendError(req.id, -32000, req.method === 'tools/call' ? toolThrew(params.name, e) : describeThrown(e));
     }
   }
 
@@ -473,11 +471,12 @@ class HeartbeatServer {
     const remaining = this.nextFireAt ? Math.max(0, Math.round((this.nextFireAt - Date.now()) / 1000)) : null;
     const blocked = this.pushBlocked();
     const mode = c.deliveryMode === 'silent' && this.silentFellBack
-      ? 'silent (the host refused the last silent wake, which carries no text, so heartbeats arrive as messages. '
+      ? 'silent (the host refused a silent wake, which carries no text, so heartbeats arrive as messages. '
         + "Setting deliveryMode again won't change that; ask whoever runs this host if you need them silent)"
       : c.deliveryMode;
     return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | mode=${mode} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
-      (c.paused || remaining === null ? '' : ` | next in ~${remaining}s`) +
+      // A tick while a wake is blocked is dropped, so none is said to be next.
+      (c.paused || remaining === null || blocked ? '' : ` | next in ~${remaining}s`) +
       ` | reminders=${this.reminders.length}` +
       // Surfaced to the agent deliberately: if wakes cannot be delivered, the
       // agent asking "when do I next wake?" should be told, not reassured.
@@ -712,9 +711,10 @@ class HeartbeatServer {
     saveReminders(this.reminders);
     this.retryRefused();
     log(`added reminder ${rem.id} fireAt=${new Date(first).toISOString()} every=${rem.everySeconds ?? 'once'}`);
-    // A fire time the reminder won't keep would be a false success.
+    // The time given is when it falls due; while no wake can be delivered, the
+    // note says what happens then.
     const blocked = this.pushBlocked();
-    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${heldNote(blocked, true)}` : ''}`);
+    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? `. ${heldNote(blocked, true)}` : ''}`);
   }
 
   private describeReminder(rem: Reminder, now: number): string {
@@ -723,7 +723,7 @@ class HeartbeatServer {
     const refused = this.refused.get(rem.id);
     if (refused) when += `; ${refused.reason}, at ${formatAgentDateTime(refused.at, AGENT_TIME_ZONE)}`;
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
-    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
+    return `due ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
   }
 
   private listRemindersText(): string {

@@ -48,7 +48,7 @@ test('a one-shot whose push fails is held, listed with the reason and when, and 
   // Long enough for a reminder re-armed after its refusal to have been tried again many times.
   await sleep(500);
   assert.equal(h.pushes.length, 1, 'tried once, not again on every fire');
-  assert.match(list, /^rem_once \| next .* \(overdue; the push failed: Feature set not enabled: heartbeat, at [^)]+\) \| one-shot \| "rem_once"$/m);
+  assert.match(list, /^rem_once \| due .* \(overdue; the push failed: Feature set not enabled: heartbeat, at [^)]+\) \| one-shot \| "rem_once"$/m);
   assert.ok(list.endsWith(`\n${refusedLine}`), list);
   // A one-shot has no interval to wait for, so its line ends at the triggers.
   await logged(h, 'reminder rem_once: the push failed: Feature set not enabled: heartbeat; '
@@ -75,13 +75,13 @@ test('a recurring reminder whose push the host refuses stays at its due time, an
     ? { result: { accepted: false, reason: 'busy' } } : {}), { reminders: [seeded] });
   t.after(h.close);
   await h.pushCount(1);
-  assert.match(await listed(h, /the host refused it/), /^rem_hourly \| next .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 3600s/m);
+  assert.match(await listed(h, /the host refused it/), /^rem_hourly \| due .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 3600s/m);
   assert.deepEqual(h.stored(), [seeded], 'the file holds it as it was, not advanced');
 
   refuse = false;
   await h.request('featureSets/update', POLICY);
   await h.pushCount(2);
-  await listed(h, /^rem_hourly \| next .* \(~\d+s\)/m);
+  await listed(h, /^rem_hourly \| due .* \(~\d+s\)/m);
   assert.deepEqual(h.stored(), [{ ...seeded, fireAt: fireAt + 3_600_000 }], 'taken, it is next due an hour after the time the host refused');
 });
 
@@ -99,7 +99,7 @@ test('a recurring reminder the host refuses is tried again an interval after eac
   }, { reminders: [seeded] });
   t.after(h.close);
   await h.pushCount(1);
-  await listed(h, /^rem_5s \| next .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 5s/m);
+  await listed(h, /^rem_5s \| due .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 5s/m);
   await logged(h, 'reminder rem_5s: the host refused it: busy; '
     + 'holding it until the next policy update, add, cancel or restart, or for its interval, 5s');
   assert.deepEqual(h.stored(), [seeded], 'refused, the file holds it as it was');
@@ -114,7 +114,7 @@ test('a recurring reminder the host refuses is tried again an interval after eac
   // Listed as next due, the last push is settled and saved: the file is
   // written in place, so a read while the take is still being saved can catch
   // it half written.
-  const after = await listed(h, /^rem_5s \| next .* \(~\d+s\) \| repeats every 5s/m);
+  const after = await listed(h, /^rem_5s \| due .* \(~\d+s\) \| repeats every 5s/m);
   assert.doesNotMatch(after, /refused|failed/, 'taken, its refusal is gone');
   assert.notEqual((h.stored()[0] as { fireAt: number }).fireAt, fireAt, 'and it has advanced in the file');
 });
@@ -160,7 +160,7 @@ test('a refused reminder is tried once more at a Notification and at a cancel, n
   assert.equal(h.pushes.length, 3, 'and not pushed again');
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
   // No wake can be delivered under a malformed policy, so it waits for one, like any due reminder.
-  assert.match(await h.call('reminder_list'), /^rem_once \| next .* \(overdue\) \| one-shot/m, 'a malformed Request is a policy update too');
+  assert.match(await h.call('reminder_list'), /^rem_once \| due .* \(overdue\) \| one-shot/m, 'a malformed Request is a policy update too');
   assert.equal(h.pushes.length, 3);
 });
 
@@ -182,14 +182,14 @@ test('until the host answers, a reminder is sent and waiting, and unchanged in t
   assert.deepEqual(h.pushes.map((p) => origin(p).reminderId).slice(0, 2), ['rem_once', 'rem_hourly']);
   assert.equal(h.pushes.length, 3, 'each is pushed once while its answer is awaited, a later fire included');
   const list = await h.call('reminder_list');
-  assert.match(list, /^rem_once \| next .* \(sent, waiting for the host's answer\) \| one-shot/m);
-  assert.match(list, /^rem_hourly \| next .* \(sent, waiting for the host's answer\) \| repeats every 3600s/m);
+  assert.match(list, /^rem_once \| due .* \(sent, waiting for the host's answer\) \| one-shot/m);
+  assert.match(list, /^rem_hourly \| due .* \(sent, waiting for the host's answer\) \| repeats every 3600s/m);
   assert.deepEqual(h.stored().filter((r) => r.id !== origin(h.pushes[2]!).reminderId), rows, 'the file holds both as they were');
 
   await h.call('reminder_cancel', { id: 'rem_once' });
   answer.get('rem_once')!({});
   answer.get('rem_hourly')!({});
-  await listed(h, /^rem_hourly \| next .* \(~\d+s\)/m);
+  await listed(h, /^rem_hourly \| due .* \(~\d+s\)/m);
   assert.doesNotMatch(await h.call('reminder_list'), /rem_once/, 'cancelled while its push was out, the host taking it changes nothing');
   assert.deepEqual(h.stored(), [{ ...rows[1]!, fireAt: fireAt + 3_600_000 }], 'taken, the recurring one advances from its own time');
   assert.equal(h.pushes.length, 3);
@@ -214,7 +214,7 @@ test('a crash with one push out and one refused loses neither: the next start tr
   t.after(second.close);
   await second.pushCount(2);
   assert.deepEqual(second.pushes.map((p) => origin(p).reminderId).sort(), ['rem_out', 'rem_refused'], 'both fire at the next start');
-  await listed(second, /^1 reminder\(s\):\nrem_refused \| next .* \(~\d+s\)/);
+  await listed(second, /^1 reminder\(s\):\nrem_refused \| due .* \(~\d+s\)/);
   assert.deepEqual(second.stored(), [{ ...rows[1]!, fireAt: fireAt + 3_600_000 }], 'and once taken, the one-shot is gone and the recurring one advances');
   assert.equal(second.pushes.length, 2, 'each was pushed once');
 });

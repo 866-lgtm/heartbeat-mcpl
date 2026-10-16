@@ -91,7 +91,7 @@ test('an overdue reminder waits until its wake can be delivered, then fires once
   await sleep(2000);
   assert.deepEqual(fired(), [], 'nothing fires while no wake can be delivered');
   const held = await list();
-  assert.match(held, /^rem_once \| next .* \(overdue\) \| one-shot \| "REM_ONCE"$/m, 'reminder_list shows the one-shot overdue');
+  assert.match(held, /^rem_once \| due .* \(overdue\) \| one-shot \| "REM_ONCE"$/m, 'reminder_list shows the one-shot overdue');
   assert.equal(held.split('\n').pop(), DENIED, 'and says why it waits');
   const waiting = await stored();
   assert.deepEqual(waiting.map((r) => r.id).sort(), [addedId, 'rem_hourly', 'rem_minutely', 'rem_once'].sort(), 'nothing is dropped meanwhile');
@@ -134,7 +134,7 @@ test('a policy change that stops wakes holds a reminder already armed, until wak
     // handled, a Notification's included.
     await list();
     await sleep(Math.max(0, dueAt + 500 - Date.now()));
-    assert.match(await list(), new RegExp(`^${id} \\| next .* \\(overdue\\) \\| one-shot`, 'm'), `held, overdue, after ${name}`);
+    assert.match(await list(), new RegExp(`^${id} \\| due .* \\(overdue\\) \\| one-shot`, 'm'), `held, overdue, after ${name}`);
     const allowedAt = Date.now();
     await session.raw('featureSets/update', POLICY);
     for (const deadline = Date.now() + 10_000; !pushes.some((p) => p.origin.reminderId === id) && Date.now() < deadline;) await sleep(50);

@@ -54,10 +54,10 @@ test('a call that can\'t do what it asked is an error that says why and what to 
     await blocked('the host has turned heartbeat off for this server', ask);
     await session.raw('featureSets/update', { ...POLICY, enabled: [] });
     await blocked("the host hasn't enabled heartbeat for this server", ask);
-    // A reminder set meanwhile says it waits, rather than give a fire time it won't keep.
+    // A reminder set meanwhile gives the time it falls due and says it waits.
     const added = await call('reminder_add', { message: 'x', inHours: 1 });
     assert.equal(added.isError, false, added.text);
-    assert.match(added.text, /^Reminder rem_\S+ set: .* No wake can be delivered now, because the host hasn't enabled heartbeat for this server, so it waits until one can\. If that doesn't change, ask whoever runs this host\.$/);
+    assert.match(added.text, /^Reminder rem_\S+ set: due \S+ \[[^\]]+\] \(~3600s\) \| one-shot \| "x"\. No wake can be delivered now, because the host hasn't enabled heartbeat for this server, so it waits until one can\. If that doesn't change, ask whoever runs this host\.$/);
     await session.raw('featureSets/update', POLICY);
     const { isError, text } = await call('heartbeat_trigger');
     assert.equal(isError, false);
