@@ -44,15 +44,15 @@ that sends its policy only as a Notification, no wake is ever delivered, and
 no wake can be delivered, the log says how many reminders won't fire and why,
 at start and at each policy change, add and cancel.
 
-A reminder changes only when the host answers its push: a one-shot the host
-took is removed, and a recurring one advances. One the host refused, or whose
-push failed or wasn't answered within 30 s, stays as it was. `reminder_list`
-shows it with the reason, and it is tried once more at the host's next policy
-change, the next `reminder_add` or `reminder_cancel`, or a restart. A reminder
-whose answer is still out when the server stops is still in the file, so it
-fires again at the next start. Where the server can't tell whether the host
-took a push, the reminder is sent again rather than lost, so the agent may hear
-it twice.
+A reminder changes only when the host takes its push: a one-shot the host took
+is removed, and a recurring one advances. One the host refused, or whose push
+failed or got no answer within 30 s, is held: `reminder_list` shows it with
+the reason and when, and it is tried once more at the host's next policy
+update, the next `reminder_add` or `reminder_cancel`, or a restart. Until the
+host takes it, the reminders file holds it as it was, so one whose push is
+still out when the server stops, or crashes, fires again at the next start. If
+the host had in fact taken such a push, or took one but answered after 30 s,
+the agent hears that reminder twice.
 
 ## Silent mode
 

@@ -82,6 +82,9 @@ export async function serverWithHost(
   /** Close the host's end of the connection, as a host that goes away does,
    *  and resolve when the server's process exits. */
   const hangUp = () => { conn.close(); return exited; };
+  /** Kill the server's process at once, as a crash does, and resolve when it
+   *  has exited. */
+  const crash = () => { child.kill('SIGKILL'); return exited; };
   const stored = () => JSON.parse(readFileSync(remindersFile, 'utf8')) as Array<Record<string, unknown>>;
-  return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp };
+  return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp, crash };
 }

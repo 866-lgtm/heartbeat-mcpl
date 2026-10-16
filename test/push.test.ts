@@ -1,12 +1,12 @@
 // sendPush says what came of a push/event, in words for the agent, and a push
-// the host never answers fails after PUSH_ANSWER_TIMEOUT_MS, so a reminder
-// waiting on its answer can't wait forever.
+// the host never answers fails after 30 s, so a reminder waiting on its answer
+// can't wait forever.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { McplConnection } from '@animalabs/mcpl-core';
 import type { PushEventParams } from '@animalabs/mcpl-core';
-import { PUSH_ANSWER_TIMEOUT_MS, sendPush } from '../src/push.js';
+import { sendPush } from '../src/push.js';
 
 const params: PushEventParams = {
   featureSet: 'heartbeat', eventId: 'reminder_1', timestamp: '2026-10-15T12:00:00.000Z',
@@ -48,7 +48,7 @@ test('each answer is told apart: taken, refused with or without a reason, or an 
   }
 });
 
-test('a push the host never answers fails once its time is up, and not before', async (t) => {
+test('a push the host never answers fails at 30 s, and not before', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = connected(() => undefined);
   t.after(c.close);
@@ -56,12 +56,12 @@ test('a push the host never answers fails once its time is up, and not before', 
   void sendPush(c.server, params).then((outcome) => { refusal = outcome.refusal; });
   const flush = () => new Promise((resolve) => setImmediate(resolve));
   await flush();
-  t.mock.timers.tick(PUSH_ANSWER_TIMEOUT_MS - 1);
+  t.mock.timers.tick(29_999);
   await flush();
-  assert.equal(refusal, undefined, 'still waiting a millisecond before the time is up');
+  assert.equal(refusal, undefined, 'still waiting a millisecond before 30 s');
   t.mock.timers.tick(1);
   await flush();
-  assert.equal(refusal, `the push failed: Request timed out after ${PUSH_ANSWER_TIMEOUT_MS}ms: push/event`);
+  assert.equal(refusal, 'the push failed: Request timed out after 30000ms: push/event');
 });
 
 test('a push out when the connection closes fails', async () => {

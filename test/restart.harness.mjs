@@ -51,7 +51,8 @@ async function start(t, rows = []) {
   });
   await session.start();
   const list = async () => (await session.callTool('reminder_list', {})).content[0].text;
-  // The server saves just after it pushes, so ask it first: its answer comes after the save.
+  // The server saves once the host has taken a push, which the harness does as
+  // the push arrives, so ask it first: its answer comes after that save.
   const stored = async () => { await list(); return JSON.parse(readFileSync(reminders, 'utf8')); };
   return { session, pushes, list, stored, reminders };
 }
