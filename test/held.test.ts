@@ -63,3 +63,20 @@ test('once wakes are allowed a reply has no held note, and a malformed Request h
   const list = await h.call('reminder_list');
   assert.ok(list.endsWith(`\nNo wake can be delivered now: ${NOT_READY}. A reminder that falls due waits until one can.`), list);
 });
+
+test('a Notification after a malformed Request is a 0.5 host\'s update: a reminder waits, and fires once a valid Request comes', async (t) => {
+  // A host that has sent any Request speaks 0.5, so it is never told that no
+  // reminder will fire on it, even after a Notification.
+  const h = await serverWithHost(() => ({}), { policy: false });
+  t.after(h.close);
+  await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
+  h.notify('featureSets/update', POLICY);
+  const added = await h.call('reminder_add', { message: 'soon', atIso: new Date(Date.now() + 1000).toISOString() });
+  assert.ok(added.endsWith(`"soon" No wake can be delivered now: ${NOT_READY}. It waits until one can.`), added);
+  assert.ok((await h.call('reminder_list')).endsWith(`\nNo wake can be delivered now: ${NOT_READY}. A reminder that falls due waits until one can.`));
+  await logged(h, `none of the 1 reminder(s) fires until a wake can be delivered: ${NOT_READY}`);
+  assert.doesNotMatch(h.stderr(), /WARNING: initial policy has still not arrived as a Request/);
+  await h.request('featureSets/update', POLICY);
+  await h.pushCount(1);
+  assert.equal(origin(h.pushes[0]!).reminderId, /Reminder (rem_\S+) set/.exec(added)?.[1]);
+});

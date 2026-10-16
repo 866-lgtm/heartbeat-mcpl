@@ -180,7 +180,7 @@ const toolDefinitions = [
       inSeconds: { type: 'number', description: 'One-shot: fire this many seconds from now.' },
       inMinutes: { type: 'number', description: 'One-shot: fire this many minutes from now.' },
       inHours: { type: 'number', description: 'One-shot: fire this many hours from now.' },
-      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). Past times fire immediately.` },
+      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). A past time fires as soon as a wake can be delivered.` },
       everySeconds: { type: 'number', description: 'Recurring: repeat every N seconds (min 5).' },
       everyMinutes: { type: 'number', description: 'Recurring: repeat every N minutes.' },
       everyHours: { type: 'number', description: 'Recurring: repeat every N hours.' },
@@ -213,8 +213,12 @@ class HeartbeatServer {
   private policyReady = false;
   /** The host has sent featureSets/update only as a Notification, with no
    *  Request: a pre-0.5 host, on whose connection no wake is ever delivered
-   *  (§5.3, §6.7). A Request, valid or not, clears it. */
+   *  (§5.3, §6.7). A Request, valid or not, clears it for good. */
   private notificationOnly = false;
+  /** A featureSets/update Request has come on this connection, valid or not.
+   *  Such a host speaks 0.5, so a Notification after it is a policy update,
+   *  not a sign of a pre-0.5 host. */
+  private requestSeen = false;
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
@@ -311,6 +315,7 @@ class HeartbeatServer {
     const conn = this.conn!;
     const parsed = parsePolicy(req.params);
     // A host that sends a Request speaks 0.5, whatever this one holds.
+    this.requestSeen = true;
     this.notificationOnly = false;
     if (!parsed.ok) {
       // §5.4: reject a malformed policy message, and hold no grant meanwhile.
@@ -355,9 +360,9 @@ class HeartbeatServer {
     this.grant = narrowGrant(this.grant, parsed.grant, parsed.hadEffectiveCapabilities);
     log(`featureSets/update (Notification) applied as reduction only: grant=[${this.grant.patterns.join(', ')}]`
       + (this.policyReady ? '' : '; ready state NOT established — §6.7 requires a Request'));
-    if (!this.policyReady) this.notificationOnly = true;
+    if (!this.requestSeen) this.notificationOnly = true;
     this.scheduleReminders();
-    if (!this.policyReady) {
+    if (this.notificationOnly) {
       // The one moment we can positively identify a pre-0.5 host: it is talking
       // policy, but in the form §6.7 says cannot establish ready state. Say so
       // once, in full, because the consequence is that no wake will ever be
