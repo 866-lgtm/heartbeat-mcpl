@@ -219,15 +219,18 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
   const h = await serverWithHost(() => ({}), { reminders: [...dropped, last] });
   try {
     await h.pushCount(1);
-    await h.settle();
+    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${last.fireAt + 1e13 * 1000}, `
+      + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
+    // The end is logged once the server has read the host's answer, a little after the push.
+    for (const deadline = Date.now() + 5_000; !h.stderr().split('\n').includes(ended) && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const lines = h.stderr().split('\n');
     for (const r of dropped) {
       const line = `[heartbeat-mcpl] dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
         + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`;
       assert.ok(lines.includes(line), `expected the log line\n${line}\nin\n${h.stderr()}`);
     }
-    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${last.fireAt + 1e13 * 1000}, `
-      + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
     assert.ok(lines.includes(ended), `expected the log line\n${ended}\nin\n${h.stderr()}`);
   } finally {
     h.close();

@@ -157,7 +157,10 @@ test('a stored time a reminder can\'t hold is dropped at load, and a recurring r
     for (const deadline = Date.now() + 15_000; !fired.includes('rem_last') && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // It ends once the server has read the host's answer, a little after the push.
+    for (const deadline = Date.now() + 5_000; (await listed()).includes('rem_last') && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     assert.deepEqual(fired, ['rem_last'], 'the recurring reminder fires its last time');
     assert.deepEqual(await listed(), ['rem_ok']);
     assert.deepEqual(JSON.parse(readFileSync(reminders, 'utf8')).map((r) => r.id), ['rem_ok']);
