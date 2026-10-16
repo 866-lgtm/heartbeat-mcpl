@@ -140,11 +140,12 @@ function loadReminders(): Reminder[] {
     if (existsSync(REMINDERS_PATH)) {
       const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
-        // A time outside a Date's range, or the null JSON wrote for one too
-        // large for a number, can never fire, and listing it throws, which took
-        // reminder_list down for every reminder. reminder_add saved such times
-        // before it checked them. The log line keeps the row, message and all,
-        // since the next save leaves it out of the file.
+        // A stored time outside a Date's range can't be listed, since formatting
+        // it throws, and that took reminder_list down for every reminder. One
+        // past the range, or the null JSON wrote for one too large for a number,
+        // could never fire; reminder_add saved such times before it checked
+        // them. One below the range is dropped the same way. The log line keeps
+        // the row, message and all, since the next save leaves it out of the file.
         const holdable = parsed.filter(isStoredReminder).filter((r): r is Reminder => {
           if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
           log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
@@ -790,7 +791,8 @@ class HeartbeatServer {
 
   /** The host's answer to a reminder's push decides what becomes of it. Taken:
    *  a one-shot is removed, and a recurring one advances to its next future
-   *  time. Refused, or the push failed: it stays as it was, and is marked
+   *  time, or ends, logged whole, if that time is past the last a reminder can
+   *  hold. Refused, or the push failed: it stays as it was, and is marked
    *  refused, which dueAt reads. Cancelled while its push was out: it stays
    *  gone, and nothing is re-armed, since the cancel was. Any other answer
    *  re-arms. */

@@ -236,3 +236,22 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
     h.close();
   }
 });
+
+test('a stored row dropped for its time stays in the file until the next save, which leaves it out', async () => {
+  const now = Date.now();
+  const row = (id: string, fireAt: number | null) =>
+    ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds: null });
+  const rows = [row('rem_far', now + 1e16), row('rem_null', null), row('rem_ok', now + 3_600_000)];
+  const h = await serverWithHost(() => ({}), { reminders: rows });
+  try {
+    // Once the list answers, the file has been read and the rows dropped.
+    assert.doesNotMatch(await h.call('reminder_list'), /rem_far|rem_null/);
+    assert.deepEqual(h.stored(), rows, 'loading writes nothing');
+    await h.call('reminder_add', { message: 'later', inHours: 2 });
+    const ids = h.stored().map((r) => r.id);
+    assert.equal(ids.length, 2, `the save leaves the dropped rows out: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes('rem_ok'));
+  } finally {
+    h.close();
+  }
+});

@@ -79,6 +79,7 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
     for (const [args, reason] of [
       [{ inSeconds: 1e13 }, /"inSeconds" 10000000000000 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
       [{ inHours: 1e306 }, /"inHours" 1e\+306 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
+      [{ inSeconds: 1e306 }, /"inSeconds" 1e\+306 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
       [{ everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its first fire past .* Give a shorter interval\.$/],
       [{ inSeconds: 5, everySeconds: 1e13 }, /"everySeconds" 10000000000000 puts its second fire past .* Give a shorter interval\.$/],
       [{ inSeconds: 1e13, everySeconds: 60 }, /"inSeconds" 10000000000000 puts its first fire past .* Give a shorter delay\.$/],
@@ -152,7 +153,9 @@ test('a stored time a reminder can\'t hold is dropped at load, and a recurring r
       effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: [],
       enabled: ['heartbeat'], disabled: [],
     });
-    assert.deepEqual(await listed(), ['rem_last', 'rem_ok'], 'only the times a reminder can hold load');
+    // rem_last is listed unless a slow start has let it fire and end already.
+    // The waits below show that it loaded and fired once.
+    assert.deepEqual((await listed()).filter((id) => id !== 'rem_last'), ['rem_ok'], 'only the times a reminder can hold load');
     // rem_last fires once, then ends, since its next time is past the last one.
     for (const deadline = Date.now() + 15_000; !fired.includes('rem_last') && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
