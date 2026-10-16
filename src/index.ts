@@ -180,7 +180,7 @@ const toolDefinitions = [
       inSeconds: { type: 'number', description: 'One-shot: fire this many seconds from now.' },
       inMinutes: { type: 'number', description: 'One-shot: fire this many minutes from now.' },
       inHours: { type: 'number', description: 'One-shot: fire this many hours from now.' },
-      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). Past times fire immediately.` },
+      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). A past time fires as soon as a wake can be delivered.` },
       everySeconds: { type: 'number', description: 'Recurring: repeat every N seconds (min 5).' },
       everyMinutes: { type: 'number', description: 'Recurring: repeat every N minutes.' },
       everyHours: { type: 'number', description: 'Recurring: repeat every N hours.' },
@@ -211,6 +211,14 @@ class HeartbeatServer {
   /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
    *  Until then every capability-dependent behavior is unavailable. */
   private policyReady = false;
+  /** The host has sent featureSets/update only as a Notification, with no
+   *  Request: a pre-0.5 host, on whose connection no wake is ever delivered
+   *  (§5.3, §6.7). A Request, valid or not, clears it for good. */
+  private notificationOnly = false;
+  /** A featureSets/update Request has come on this connection, valid or not.
+   *  Such a host speaks 0.5, so a Notification after it is a policy update,
+   *  not a sign of a pre-0.5 host. */
+  private requestSeen = false;
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
@@ -219,7 +227,9 @@ class HeartbeatServer {
     this.conn = conn;
     await this.handleInitialize();
     this.reschedule();
-    this.scheduleReminders(); // reminders loaded from disk resume here (restart-survival)
+    // Reminders loaded from disk wait until their wakes can be delivered, which
+    // the host's policy decides; meanwhile the log says how many there are.
+    this.scheduleReminders();
     try {
       while (!conn.isClosed) {
         const msg = await conn.nextMessage();
@@ -304,12 +314,16 @@ class HeartbeatServer {
   private handleFeatureSetsUpdateRequest(req: ReqMsg): void {
     const conn = this.conn!;
     const parsed = parsePolicy(req.params);
+    // A host that sends a Request speaks 0.5, whatever this one holds.
+    this.requestSeen = true;
+    this.notificationOnly = false;
     if (!parsed.ok) {
       // §5.4: reject a malformed policy message, and hold no grant meanwhile.
       this.grant = EMPTY_GRANT;
       this.policyReady = false;
       log(`featureSets/update rejected as malformed: ${parsed.error}; grant cleared`);
       conn.sendError(req.id, -32602, `Invalid featureSets/update: ${parsed.error}`);
+      this.scheduleReminders();
       return;
     }
     this.grant = parsed.grant;
@@ -327,6 +341,7 @@ class HeartbeatServer {
     }
     for (const note of receipt.notes ?? []) log(`receipt note: ${note}`);
     conn.sendResponse(req.id, receipt);
+    this.scheduleReminders();
   }
 
   /**
@@ -345,7 +360,9 @@ class HeartbeatServer {
     this.grant = narrowGrant(this.grant, parsed.grant, parsed.hadEffectiveCapabilities);
     log(`featureSets/update (Notification) applied as reduction only: grant=[${this.grant.patterns.join(', ')}]`
       + (this.policyReady ? '' : '; ready state NOT established — §6.7 requires a Request'));
-    if (!this.policyReady) {
+    if (!this.requestSeen) this.notificationOnly = true;
+    this.scheduleReminders();
+    if (this.notificationOnly) {
       // The one moment we can positively identify a pre-0.5 host: it is talking
       // policy, but in the form §6.7 says cannot establish ready state. Say so
       // once, in full, because the consequence is that no wake will ever be
@@ -364,7 +381,14 @@ class HeartbeatServer {
   /** Why a wake cannot be delivered right now, or null when it can. */
   private pushBlockedReason(): string | null {
     if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
-    if (!this.policyReady) return 'no featureSets/update Request received yet; capability-dependent behavior is unavailable until initial policy completes (§5.3)';
+    if (this.notificationOnly) {
+      return 'host sent featureSets/update only as a Notification, which cannot establish ready state (§6.7), '
+        + 'so no wake is delivered on this connection';
+    }
+    if (!this.policyReady) {
+      return 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
+        + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
+    }
     const state = this.featureSetState();
     if (state.active) return null;
     if (state.reason === 'capability_denied') return `capability not granted: ${state.missing.join(', ')} (§5.4 — absence is denial)`;
@@ -562,7 +586,7 @@ class HeartbeatServer {
       } catch (error) {
         return this.text(`reminder_add: ${(error as Error).message}`, true);
       }
-      // A past time is allowed: it fires on the next tick.
+      // A past time is allowed: it fires on the next tick a wake can be delivered.
     }
 
     if (fireAt === null) {
@@ -583,13 +607,29 @@ class HeartbeatServer {
     saveReminders(this.reminders);
     this.scheduleReminders();
     log(`added reminder ${rem.id} fireAt=${new Date(fireAt).toISOString()} every=${everySeconds ?? 'once'}`);
-    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}`);
+    // A fire time the reminder won't keep would be a false success.
+    const blocked = this.pushBlockedReason();
+    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
+  }
+
+  /** Whether no wake can ever be delivered on this connection: an MCP-only
+   *  host, or a pre-0.5 one. */
+  private neverDelivers(): boolean {
+    return !this.mcplEnabled || this.notificationOnly;
+  }
+
+  /** What a due reminder does while no wake can be delivered, for
+   *  reminder_list (`one` false) and for the reminder reminder_add has just
+   *  set (`one` true): it waits until one can, unless none ever can here. */
+  private heldText(blocked: string, one: boolean): string {
+    if (this.neverDelivers()) return `No wake can be delivered on this host: ${blocked}. ${one ? "It won't fire" : 'No reminder will fire'} here.`;
+    return `No wake can be delivered now: ${blocked}. ${one ? 'It' : 'A reminder that falls due'} waits until one can.`;
   }
 
   private describeReminder(rem: Reminder, now: number): string {
-    const inS = Math.max(0, Math.round((rem.fireAt - now) / 1000));
+    const when = rem.fireAt <= now ? 'overdue' : `~${Math.round((rem.fireAt - now) / 1000)}s`;
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
-    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (~${inS}s) | ${rec} | "${rem.message}"`;
+    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
   }
 
   private listRemindersText(): string {
@@ -598,7 +638,11 @@ class HeartbeatServer {
     const lines = [...this.reminders]
       .sort((a, b) => a.fireAt - b.fireAt)
       .map((r) => `${r.id} | ${this.describeReminder(r, now)}`);
-    return `${this.reminders.length} reminder(s):\n${lines.join('\n')}`;
+    // While no wake can be delivered, say so and what that means for the
+    // reminders, where the agent looks for them.
+    const blocked = this.pushBlockedReason();
+    const waiting = blocked ? `\n${this.heldText(blocked, false)}` : '';
+    return `${this.reminders.length} reminder(s):\n${lines.join('\n')}${waiting}`;
   }
 
   private cancelReminder(args: Record<string, unknown>) {
@@ -614,11 +658,23 @@ class HeartbeatServer {
   }
 
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all
-   *  reminders; it re-arms after each fire. */
+   *  reminders; it re-arms after each fire, and each change of the host's
+   *  policy re-arms it. A reminder fires only when its wake can be delivered:
+   *  while something blocks it (an MCP-only or pre-0.5 host, no valid policy
+   *  yet, a malformed one, or one that denies wakes), nothing is armed, and a due
+   *  reminder waits, overdue, rather than being pushed into nothing and
+   *  removed. This runs only at start, on a policy change, an add, a cancel
+   *  and a fire, so its log line for held reminders can't repeat on its own. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
     if (this.reminders.length === 0) return;
+    const blocked = this.pushBlockedReason();
+    if (blocked !== null) {
+      log(`none of the ${this.reminders.length} reminder(s) `
+        + `${this.neverDelivers() ? 'will fire on this host' : 'fires until a wake can be delivered'}: ${blocked}`);
+      return;
+    }
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
     this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
   }
