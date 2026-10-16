@@ -27,6 +27,8 @@ const NOT_READY = 'No wake can be delivered now: no valid featureSets/update Req
   + 'malformed); capability-dependent behavior is unavailable until one arrives (§5.3). A reminder that falls due waits until one can.';
 const DENIED = 'No wake can be delivered now: capability not granted: pushEvents (§5.4 — absence is denial). '
   + 'A reminder that falls due waits until one can.';
+const PRE_05 = 'No wake can be delivered on this host: host sent featureSets/update only as a Notification, which cannot '
+  + 'establish ready state (§6.7), so no wake is delivered on this connection. No reminder will fire here.';
 
 /** A server on a reminders file holding `rows`, with every reminder push it sends, and when it arrived. */
 async function start(t, rows = []) {
@@ -68,13 +70,14 @@ test('an overdue reminder waits until its wake can be delivered, then fires once
   const lastLine = async () => (await list()).split('\n').pop();
 
   // Every way a wake can't be delivered yet: no policy, a Notification-form
-  // update, a malformed Request, and a valid policy that denies wakes. The
+  // update with no Request (a pre-0.5 host, where none will be until a Request
+  // comes), a malformed Request, and a valid policy that denies wakes. The
   // agent adds a reminder due in 1 s and cancels another meanwhile.
   assert.equal(await lastLine(), NOT_READY, 'with no policy yet, reminder_list says why reminders wait');
   session.notify('featureSets/update', POLICY);
-  assert.equal(await lastLine(), NOT_READY, 'and after a Notification-form update');
+  assert.equal(await lastLine(), PRE_05, 'after a Notification-form update alone, that none will fire on this host');
   await assert.rejects(session.raw('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
-  assert.equal(await lastLine(), NOT_READY, 'and after a malformed Request');
+  assert.equal(await lastLine(), NOT_READY, 'and after a malformed Request, since a host that sends Requests speaks 0.5, that they wait');
   const added = (await session.callTool('reminder_add', { message: 'NEW', inSeconds: 1 })).content[0].text;
   const addedId = /Reminder (rem_\S+) set/.exec(added)?.[1];
   assert.ok(addedId, added);
@@ -123,6 +126,9 @@ test('a policy change that stops wakes holds a reminder already armed, until wak
     const id = /Reminder (rem_\S+) set/.exec(added)?.[1];
     const dueAt = JSON.parse(readFileSync(reminders, 'utf8')).find((r) => r.id === id).fireAt;
     await stop();
+    // The server takes messages in order, so once this answers, the stop is
+    // handled, a Notification's included.
+    await list();
     await sleep(Math.max(0, dueAt + 500 - Date.now()));
     assert.match(await list(), new RegExp(`^${id} \\| next .* \\(overdue\\) \\| one-shot`, 'm'), `held, overdue, after ${name}`);
     const allowedAt = Date.now();

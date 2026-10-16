@@ -211,6 +211,10 @@ class HeartbeatServer {
   /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
    *  Until then every capability-dependent behavior is unavailable. */
   private policyReady = false;
+  /** The host has sent featureSets/update only as a Notification, with no
+   *  Request: a pre-0.5 host, on whose connection no wake is ever delivered
+   *  (§5.3, §6.7). A Request, valid or not, clears it. */
+  private notificationOnly = false;
   /** The host refused the most recent silent tick as an empty push, so it
    *  went out in message mode (see silent-delivery.ts). */
   private silentFellBack = false;
@@ -220,7 +224,8 @@ class HeartbeatServer {
     await this.handleInitialize();
     this.reschedule();
     // Reminders loaded from disk wait until their wakes can be delivered, which
-    // the host's policy decides (scheduleReminders).
+    // the host's policy decides; meanwhile the log says how many there are.
+    this.scheduleReminders();
     try {
       while (!conn.isClosed) {
         const msg = await conn.nextMessage();
@@ -305,6 +310,8 @@ class HeartbeatServer {
   private handleFeatureSetsUpdateRequest(req: ReqMsg): void {
     const conn = this.conn!;
     const parsed = parsePolicy(req.params);
+    // A host that sends a Request speaks 0.5, whatever this one holds.
+    this.notificationOnly = false;
     if (!parsed.ok) {
       // §5.4: reject a malformed policy message, and hold no grant meanwhile.
       this.grant = EMPTY_GRANT;
@@ -348,6 +355,7 @@ class HeartbeatServer {
     this.grant = narrowGrant(this.grant, parsed.grant, parsed.hadEffectiveCapabilities);
     log(`featureSets/update (Notification) applied as reduction only: grant=[${this.grant.patterns.join(', ')}]`
       + (this.policyReady ? '' : '; ready state NOT established — §6.7 requires a Request'));
+    if (!this.policyReady) this.notificationOnly = true;
     this.scheduleReminders();
     if (!this.policyReady) {
       // The one moment we can positively identify a pre-0.5 host: it is talking
@@ -368,6 +376,10 @@ class HeartbeatServer {
   /** Why a wake cannot be delivered right now, or null when it can. */
   private pushBlockedReason(): string | null {
     if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
+    if (this.notificationOnly) {
+      return 'host sent featureSets/update only as a Notification, which cannot establish ready state (§6.7), '
+        + 'so no wake is delivered on this connection';
+    }
     if (!this.policyReady) {
       return 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
         + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
@@ -595,12 +607,17 @@ class HeartbeatServer {
     return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
   }
 
+  /** Whether no wake can ever be delivered on this connection: an MCP-only
+   *  host, or a pre-0.5 one. */
+  private neverDelivers(): boolean {
+    return !this.mcplEnabled || this.notificationOnly;
+  }
+
   /** What a due reminder does while no wake can be delivered, for
    *  reminder_list (`one` false) and for the reminder reminder_add has just
-   *  set (`one` true): it waits until one can, unless the host has no push
-   *  events at all, when none ever can. */
+   *  set (`one` true): it waits until one can, unless none ever can here. */
   private heldText(blocked: string, one: boolean): string {
-    if (!this.mcplEnabled) return `No wake can be delivered on this host: ${blocked}. ${one ? "It won't fire" : 'No reminder will fire'} here.`;
+    if (this.neverDelivers()) return `No wake can be delivered on this host: ${blocked}. ${one ? "It won't fire" : 'No reminder will fire'} here.`;
     return `No wake can be delivered now: ${blocked}. ${one ? 'It' : 'A reminder that falls due'} waits until one can.`;
   }
 
@@ -638,18 +655,19 @@ class HeartbeatServer {
   /** (Re)arm a single wake for the earliest due reminder. One wake covers all
    *  reminders; it re-arms after each fire, and each change of the host's
    *  policy re-arms it. A reminder fires only when its wake can be delivered:
-   *  while something blocks it (an MCP-only host, no valid policy yet, a
-   *  malformed one, or one that denies wakes), nothing is armed, and a due
+   *  while something blocks it (an MCP-only or pre-0.5 host, no valid policy
+   *  yet, a malformed one, or one that denies wakes), nothing is armed, and a due
    *  reminder waits, overdue, rather than being pushed into nothing and
-   *  removed. This runs only on a policy change, an add, a cancel and a fire,
-   *  so its log line for held reminders can't repeat on its own. */
+   *  removed. This runs only at start, on a policy change, an add, a cancel
+   *  and a fire, so its log line for held reminders can't repeat on its own. */
   private scheduleReminders(): void {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
     if (this.reminders.length === 0) return;
     const blocked = this.pushBlockedReason();
     if (blocked !== null) {
-      log(`holding ${this.reminders.length} reminder(s) until a wake can be delivered: ${blocked}`);
+      log(`none of the ${this.reminders.length} reminder(s) `
+        + `${this.neverDelivers() ? 'will fire on this host' : 'fires until a wake can be delivered'}: ${blocked}`);
       return;
     }
     const soonest = Math.min(...this.reminders.map((r) => r.fireAt));
