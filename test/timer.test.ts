@@ -41,6 +41,18 @@ test('a time already passed is called from a timer, not before callAt returns', 
   assert.equal(calls, 1);
 });
 
+test('a time already passed asks setTimeout to wait 0 ms, never a negative time', (t) => {
+  // Asked for a negative wait, Node 24 warns (TimeoutNegativeWarning), but only
+  // once per process, and Node 22.12.0 doesn't, so a stand-in records the wait.
+  const waits: unknown[] = [];
+  t.mock.method(globalThis, 'setTimeout', ((_fn: () => void, ms?: number) => {
+    waits.push(ms);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof setTimeout);
+  callAt(Date.now() - 10_000, () => {});
+  assert.deepEqual(waits, [0]);
+});
+
 test('cancelling after a step has passed cancels the step that is pending', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   let calls = 0;
