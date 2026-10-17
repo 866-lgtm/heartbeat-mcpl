@@ -52,7 +52,7 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
         problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, slips))}.`);
       } else if (theirs.some((name) => isNearMiss(key, name))) {
         const meant = closestNames(key, theirs.filter((name) => isNearMiss(key, name)), 1)[0];
-        const owners = andNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`));
+        const owners = joinNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`), 'and');
         problems.push(meant === key
           ? `"${key}" is ${owners} argument, not ${tool.name}'s; ${takes(tool, tool.name)}.`
           : `"${key}" is close to "${meant}", ${owners} argument, not one ${tool.name} takes; ${takes(tool, tool.name)}.`);
@@ -107,7 +107,7 @@ function wanted(schema: ArgumentSchema, value: unknown): string {
 }
 
 /** A value as an agent would recognize what it sent. */
-export function describeValue(value: unknown): string {
+function describeValue(value: unknown): string {
   if (typeof value === 'string') return `the string ${JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)}`;
   if (typeof value === 'number') return `the number ${value}`;
   if (typeof value === 'boolean') return String(value);
@@ -121,18 +121,17 @@ function firstSentence(description: string): string {
   return sentence.charAt(0).toLowerCase() + sentence.slice(1);
 }
 
-export function andList(items: readonly string[]): string {
-  return andNames(items.map((item) => `"${item}"`));
+function andList(items: readonly string[]): string {
+  return joinNames(items.map((item) => `"${item}"`), 'and');
 }
 
-/** `a`, `a and b`, or `a, b and c`, as given. */
-function andNames(items: readonly string[]): string {
-  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+function orList(items: readonly string[]): string {
+  return joinNames(items.map((item) => `"${item}"`), 'or');
 }
 
-export function orList(items: readonly string[]): string {
-  const quoted = items.map((item) => `"${item}"`);
-  return quoted.length < 2 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} or ${quoted[quoted.length - 1]}`;
+/** `a`, `a and b`, or `a, b and c`, as given (or with "or"). */
+function joinNames(items: readonly string[], word: 'and' | 'or'): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} ${word} ${items[items.length - 1]}`;
 }
 
 /** A length given in units that add up: each argument given with its value,
@@ -163,8 +162,7 @@ export function addUnits(
 
 /** `"inHours" 1 and "inMinutes" 30`, as the agent gave them. */
 export function givenList(length: Length): string {
-  const parts = length.given.map(([name, value]) => `"${name}" ${value}`);
-  return parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return joinNames(length.given.map(([name, value]) => `"${name}" ${value}`), 'and');
 }
 
 /** `"inHours" 1 and "inMinutes" 30 add up to`, or `"inMinutes" 90 is`. */
