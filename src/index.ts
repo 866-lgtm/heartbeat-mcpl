@@ -27,7 +27,7 @@ import { sendPush } from './push.js';
 import { formatReminderText } from './reminder-text.js';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
-import { addUnits, checkArguments, givenList, givenText, ignoredNote } from './arguments.js';
+import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
@@ -658,30 +658,37 @@ class HeartbeatServer {
     if (typeof args.message === 'string' && !message) problems.push('"message" is blank; give the text to deliver when it fires.');
     const delay = addUnits(args, DELAY_UNITS, problems);
     const every = addUnits(args, EVERY_UNITS, problems);
+    // The times the call sent, whatever their values: a delay or atIso it sent
+    // sets the first fire even when it can't be read.
+    const delayNames = DELAY_UNITS.map(([name]) => name).filter((name) => Object.hasOwn(args, name));
+    const atGiven = Object.hasOwn(args, 'atIso');
     if (every && every.seconds < MIN_REMINDER_SECONDS) {
       problems.push(`${givenText(every)} ${every.seconds} s, under the ${MIN_REMINDER_SECONDS}-second floor for a repeating reminder; `
-        + `give ${MIN_REMINDER_SECONDS} seconds or more, or leave the interval out for a one-off.`);
+        + `give ${MIN_REMINDER_SECONDS} seconds or more, or leave the interval out and give a delay or atIso for a one-off.`);
     }
-    const atIso = typeof args.atIso === 'string' ? args.atIso : null;
-    if (atIso !== null && delay) problems.push(`"atIso" and the delay, ${givenList(delay)}, both set when it first fires; give one of them.`);
-    const timeGiven = [...DELAY_UNITS, ...EVERY_UNITS].some(([name]) => Object.hasOwn(args, name)) || Object.hasOwn(args, 'atIso');
+    if (atGiven && delayNames.length > 0) problems.push(`"atIso" and ${andList(delayNames)} both set when it first fires; give one of them.`);
+    const timeGiven = delayNames.length > 0 || atGiven || EVERY_UNITS.some(([name]) => Object.hasOwn(args, name));
     if (!timeGiven) {
       problems.push('No time was given: give a delay in inSeconds, inMinutes or inHours, a time in atIso, '
         + 'or an interval to repeat in everySeconds, everyMinutes or everyHours.');
     }
     let at: number | null = null;
-    if (atIso !== null) {
+    if (typeof args.atIso === 'string') {
       try {
-        at = parseReminderTime(atIso, AGENT_TIME_ZONE);
+        at = parseReminderTime(args.atIso, AGENT_TIME_ZONE);
       } catch (error) {
         problems.push((error as Error).message);
       }
       // A past time is allowed: it fires on the next tick a wake can be delivered.
     }
 
-    // The first fire: at the delay or atIso, else one interval out.
+    // The first fire: at the delay or atIso the call sent, else one interval
+    // out. One it sent that can't be read leaves the first fire unknown, so the
+    // interval isn't checked against a first fire the call didn't ask for.
     const now = Date.now();
-    const first = delay ? now + Math.round(delay.seconds * 1000) : at ?? (every ? now + Math.round(every.seconds * 1000) : null);
+    const first = delayNames.length > 0 ? (delay ? now + delay.seconds * 1000 : null)
+      : atGiven ? at
+      : every ? now + every.seconds * 1000 : null;
     // A delay or interval can reach past the last time a Date holds (atIso's
     // parser refuses its own). Refuse it before anything is saved: a time past
     // it can never fire, and listing it throws.
@@ -859,12 +866,9 @@ class HeartbeatServer {
       } else {
         // Advance to the next future time. If we were behind (e.g. the server was
         // down through several intervals), skip ahead rather than firing a burst.
-        // The period is rounded to the millisecond, as the first fire is, so a
-        // stored time stays whole: 8.001 s is 8000.999999999999 ms unrounded.
         const now = Date.now();
-        const periodMs = Math.round(rem.everySeconds * 1000);
-        let next = rem.fireAt + periodMs;
-        if (next <= now) next = now + periodMs;
+        let next = rem.fireAt + rem.everySeconds * 1000;
+        if (next <= now) next = now + rem.everySeconds * 1000;
         // A next time past the last a Date holds could never fire, and listing
         // it would throw, so the reminder ends here. The log line keeps the
         // row, message and all, since this save leaves it out of the file.

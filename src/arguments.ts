@@ -121,7 +121,7 @@ function firstSentence(description: string): string {
   return sentence.charAt(0).toLowerCase() + sentence.slice(1);
 }
 
-function andList(items: readonly string[]): string {
+export function andList(items: readonly string[]): string {
   return joinNames(items.map((item) => `"${item}"`), 'and');
 }
 
@@ -161,7 +161,7 @@ export function addUnits(
 }
 
 /** `"inHours" 1 and "inMinutes" 30`, as the agent gave them. */
-export function givenList(length: Length): string {
+function givenList(length: Length): string {
   return joinNames(length.given.map(([name, value]) => `"${name}" ${value}`), 'and');
 }
 
