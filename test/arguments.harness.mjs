@@ -149,6 +149,15 @@ test('every argument is applied, or the call is refused and changes nothing', as
     const reasonAlone = await call('heartbeat_configure', { pausedReason: 'testing' });
     assert.equal(reasonAlone.isError, true, reasonAlone.text);
     assert.equal(reasonAlone.text, 'heartbeat_configure: nothing was changed. "pausedReason" isn\'t an argument heartbeat_configure takes; the closest is "paused".');
+    // Each name is weighed on its own: beside "paused", "pausedMessage" is still a slip for "message".
+    const twoNames = await call('heartbeat_configure', { paused: true, pausedMessage: 'back soon' });
+    assert.equal(twoNames.isError, true, twoNames.text);
+    assert.equal(twoNames.text, 'heartbeat_configure: nothing was changed. "pausedMessage" isn\'t an argument heartbeat_configure takes; the closest is "message".');
+    // A part of several names is named with all of them, as the real schema ranks them.
+    const interval = await call('heartbeat_configure', { interval: 30 });
+    assert.equal(interval.isError, true, interval.text);
+    assert.equal(interval.text, 'heartbeat_configure: nothing was changed. "interval" isn\'t an argument heartbeat_configure takes; '
+      + 'the closest is "intervalHours", "intervalSeconds" or "intervalMinutes".');
     assert.equal(stored(config), held);
   });
 
@@ -170,6 +179,10 @@ test('every argument is applied, or the call is refused and changes nothing', as
     // Cancelled well before it would fire, so the file holds still for the tests after.
     const soon = await add({ inSeconds: 4 }, 4000);
     assert.equal((await call('reminder_cancel', { id: soon.id })).isError, false);
+    // Under load the 4 s one may fire before its cancel lands. A push sent before the cancel's
+    // answer arrives before it, on the same stream, so any fire of it after this point is a
+    // cancel that left it armed.
+    const firedByCancel = fired.length;
     // With no delay it fires on the server's next tick, which can come before
     // the file could be read after the reply, so its id comes from the reply.
     const zero = await call('reminder_add', { message: 'x', inSeconds: 0 });
@@ -178,8 +191,8 @@ test('every argument is applied, or the call is refused and changes nothing', as
     for (const deadline = Date.now() + 10_000; !fired.includes(zeroId) && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    // The 4 s one may fire before its cancel lands, under load, so it is left out.
     assert.deepEqual(fired.filter((id) => id !== soon.id), [zeroId], 'the reminder with no delay fires, and only it');
+    assert.equal(fired.slice(firedByCancel).includes(soon.id), false, 'the cancelled reminder never fires after its cancel');
     // The host's answer to its push is what removes it, so wait until the server has applied it.
     for (const deadline = Date.now() + 5_000; await listed(zeroId) !== undefined; await sleep(50)) {
       assert.ok(Date.now() < deadline, 'it is gone once the host has taken its push');
@@ -189,6 +202,10 @@ test('every argument is applied, or the call is refused and changes nothing', as
 
   await t.test('a fraction of a second is kept to the millisecond, in the first fire and each advance', async () => {
     const later = await add({ inSeconds: 8.001 }, 8001);
+    // Exactly: the server stamps both from one clock reading, and 8.001 * 1000 is 8000.999999999999, which added to
+    // a time of an epoch's size rounds to 8001. The window alone passes a delay rounded to 8 s whenever the server
+    // reads its clock a millisecond or more after the call began.
+    assert.equal(later.fireAt, later.createdAt + 8001, 'a first fire 8.001 s on');
     assert.equal((await call('reminder_cancel', { id: later.id })).isError, false);
     const repeating = await call('reminder_add', { message: 'x', inSeconds: 0, everySeconds: 8.001 });
     assert.equal(repeating.isError, false, repeating.text);
@@ -233,7 +250,7 @@ test('every argument is applied, or the call is refused and changes nothing', as
       ['reminder_add', { message: 'x', everySeconds: 4.9994 }, /"everySeconds" 4\.9994 is 4\.999 s, under the 5-second floor for a repeating reminder/],
       ['reminder_add', { message: 'x', inMinutes: '5' }, /"inMinutes" is the string "5"; give it as a number: 5\./],
       ['reminder_add', { message: 'x', inMinutes: -5, everySeconds: 10 }, /"inMinutes" -5 is negative; give 0 or more\./],
-      ['reminder_add', { message: 'x', inSeconds: 5, every: 60 }, /"every" isn't an argument reminder_add takes; the closest is "everyHours" or "everySeconds"\./],
+      ['reminder_add', { message: 'x', inSeconds: 5, every: 60 }, /"every" isn't an argument reminder_add takes; the closest is "everyHours", "everySeconds" or "everyMinutes"\./],
       ['reminder_add', { message: '  ', inMinutes: 5 }, /"message" is blank/],
       ['reminder_add', { message: 'x' }, /No time was given: give a delay in inSeconds, inMinutes or inHours, a time in atIso, or an interval/],
       ['reminder_cancel', { id: 5 }, /^reminder_cancel: nothing was cancelled\. "id" is the number 5/],
@@ -249,6 +266,11 @@ test('every argument is applied, or the call is refused and changes nothing', as
     assert.equal(unread.isError, true, unread.text);
     assert.match(unread.text, /"atIso" is not a valid ISO-8601 timestamp: not a time\./);
     assert.doesNotMatch(unread.text, /first fire/);
+    // So does a delay that can't be read.
+    const negative = await call('reminder_add', { message: 'x', inMinutes: -5, everySeconds: 1e13 });
+    assert.equal(negative.isError, true, negative.text);
+    assert.match(negative.text, /"inMinutes" -5 is negative; give 0 or more\./);
+    assert.doesNotMatch(negative.text, /first fire/);
     assert.equal(stored(reminders), before);
   });
 });

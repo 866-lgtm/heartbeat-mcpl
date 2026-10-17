@@ -82,6 +82,11 @@ test('a key that holds an argument\'s whole name is a slip for it sent without i
   // Another tool's argument, held whole.
   assert.deepEqual(checkArguments(list, { intervalMinutesValue: 5 }, tools).problems,
     ['"intervalMinutesValue" is close to "intervalMinutes", configure\'s argument, not one list takes; list takes no arguments.']);
+  // Beside another tool's argument it holds, it is an extra there too.
+  assert.deepEqual(checkArguments(list, { intervalMinutes: 5, intervalMinutesValue: 6 }, tools), {
+    problems: ['"intervalMinutes" is configure\'s argument, not list\'s; list takes no arguments.'],
+    ignored: ['intervalMinutesValue'],
+  });
   // A name of a letter or two is in too many keys to count: "valid" is no slip for "id".
   assert.deepEqual(checkArguments(list, { valid: true }, tools), { problems: [], ignored: ['valid'] });
 });

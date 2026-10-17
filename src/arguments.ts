@@ -48,8 +48,8 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
       const theirs = [...new Set(others.flatMap((other) => Object.keys(other.inputSchema.properties)))];
       const slips = names.filter((name) => isSlip(key, name, args));
       if (slips.length > 0) {
-        // Suggest only the names the slip was decided on, ranked, so the suggestion never names another.
-        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, slips))}.`);
+        // Suggest every name the slip was decided on, ranked, and only those.
+        problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, slips, slips.length))}.`);
       } else if (theirs.some((name) => isSlip(key, name, args))) {
         const meant = closestNames(key, theirs.filter((name) => isSlip(key, name, args)), 1)[0];
         const owners = joinNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`), 'and');
@@ -80,12 +80,13 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
 
 /** Whether `key` is a slip for argument `name`: a near miss (isNearMiss), or
  *  a longer key that holds `name` whole, ignoring case, sent without it. Sent
- *  beside its argument, such a key is an extra that explains it, such as
- *  `pausedReason` beside `paused`; sent in its place, it is the argument under
- *  another name, such as `heartbeatIntervalMinutes` for `intervalMinutes`. The
- *  name needs three characters or more, as a part of a name does for
- *  isNearMiss, since a letter or two is in nearly every name. Only the whole
- *  call can tell the two apart, so this sits beside isNearMiss, not in it. */
+ *  in its place, such a key is the argument under another name, such as
+ *  `heartbeatIntervalMinutes` for `intervalMinutes`. Sent beside it, it is no
+ *  slip for it unless it is a near miss too, since it explains the argument,
+ *  as `pausedReason` does beside `paused`. The name needs three characters or
+ *  more, as a part of a name does for isNearMiss, since a letter or two is in
+ *  nearly every name. Only the whole call can tell the two apart, so this sits
+ *  beside isNearMiss, not in it. */
 function isSlip(key: string, name: string, args: object): boolean {
   if (isNearMiss(key, name)) return true;
   return name.length >= 3 && key.toLowerCase().includes(name.toLowerCase()) && !Object.hasOwn(args, name);
@@ -186,8 +187,8 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
 // closestNames, isNearMiss, noiseLimit and editDistance, from here to the end
 // of this file, are agent-framework's closest-names helper
 // (src/closest-names.ts), copied unchanged rather than imported, since it
-// isn't published, so this server and agent-framework agree on what counts as
-// a slip and on what they suggest.
+// isn't published, so this server and agent-framework decide near misses and
+// rank suggestions the same way.
 
 /**
  * The names someone most likely meant, when the one they gave matches none:

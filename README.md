@@ -20,13 +20,14 @@ nothing and names each problem at once: a value of the wrong type or out of
 range, two arguments that contradict each other, or a name the tool doesn't
 take that is a slip for one it does, or for one another of these tools takes.
 A slip is the same name ignoring case, a few edits away, a part of it of three
-letters or more, such as `mode` for `deliveryMode`, or a longer name that holds
-it, sent without it, such as `heartbeatIntervalMinutes` for `intervalMinutes`.
-Sent beside the name it holds, such as `pausedReason` beside `paused`, it is an
-extra. Any other name a tool doesn't take is ignored, extras included, and the
-result says so and what the tool takes, unless the call sends nothing else to a
-tool that takes arguments, which then refuses it. Lengths are kept to the
-millisecond.
+letters or more, such as `mode` for `deliveryMode`, or, for a name of three
+letters or more, a longer name that holds it, sent without it, such as
+`heartbeatIntervalMinutes` for `intervalMinutes`. Each name is weighed on its
+own: `pausedReason` sent beside `paused` is no slip for it, while
+`pausedMessage` sent beside it is a slip for `message`. Any other name a tool
+doesn't take is ignored, and the result says so and what the tool takes,
+unless the call sends nothing else to a tool that takes arguments, which then
+refuses it. Lengths are kept to the millisecond.
 
 ## Reminders
 
