@@ -2,7 +2,7 @@
 // decides how each push/event is answered, and reads the server's log.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,13 +17,23 @@ export const origin = (p: PushEventParams) => (p.origin ?? {}) as Record<string,
  *  (`{ accepted: true, … }` when neither is given). */
 export type PushAnswer = { error?: [number, string]; result?: unknown };
 
+/** Wait for the server to log `line`, whole. */
+export async function logged(h: { stderr: () => string }, line: string) {
+  const deadline = Date.now() + 5_000;
+  while (!h.stderr().split('\n').includes(`[heartbeat-mcpl] ${line}`)) {
+    assert.ok(Date.now() < deadline, `expected the log line\n${line}\nin\n${h.stderr()}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 /** Start the server on a fresh config, with `reminders` stored, and act as its
  *  host: initialize, send the policy as a Request, and answer each push/event
- *  as `answerPush` says. With `mcpl` false it initializes as an MCP-only host,
- *  which sends no policy; with `policy` false it sends none either, as a
- *  pre-0.5 host's Request never comes. */
+ *  as `answerPush` says, at once, or when the promise it returns settles. With
+ *  `mcpl` false it initializes as an MCP-only host, which sends no policy;
+ *  with `policy` false it sends none either, as a pre-0.5 host's Request never
+ *  comes. */
 export async function serverWithHost(
-  answerPush: (p: PushEventParams) => PushAnswer,
+  answerPush: (p: PushEventParams) => PushAnswer | Promise<PushAnswer>,
   { reminders = [] as unknown[], mcpl = true, policy = true } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'hb-scripted-host-'));
@@ -36,6 +46,9 @@ export async function serverWithHost(
   });
   let stderr = '';
   child.stderr.on('data', (b) => { stderr += String(b); });
+  // 'close' comes once the process has exited and its output has all been
+  // read, so a test that reads stderr after it sees every line.
+  const exited = new Promise<void>((resolve) => child.on('close', () => resolve()));
   const conn = McplConnection.fromStreams(child.stdout, child.stdin);
   const pushes: PushEventParams[] = [];
   const pushWaiters: Array<() => void> = [];
@@ -45,10 +58,15 @@ export async function serverWithHost(
         const msg = await conn.nextMessage();
         if (msg.type !== 'request' || msg.request.method !== 'push/event') continue;
         const p = msg.request.params as PushEventParams;
+        const { id } = msg.request;
         pushes.push(p);
+        const send = (answer: PushAnswer) => {
+          if (answer.error) conn.sendError(id, ...answer.error);
+          else conn.sendResponse(id, answer.result ?? { accepted: true, inferenceId: 'i' });
+        };
         const answer = answerPush(p);
-        if (answer.error) conn.sendError(msg.request.id, ...answer.error);
-        else conn.sendResponse(msg.request.id, answer.result ?? { accepted: true, inferenceId: 'i' });
+        if (answer instanceof Promise) void answer.then(send);
+        else send(answer);
         pushWaiters.splice(0).forEach((w) => w());
       }
     } catch { /* closed */ }
@@ -62,8 +80,8 @@ export async function serverWithHost(
   const notify = (method: string, params: unknown) => conn.sendNotification(method, params);
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     ((await conn.sendRequest('tools/call', { name, arguments: args }, 10_000)) as { content: Array<{ text: string }> }).content[0]!.text;
-  const pushCount = async (n: number) => {
-    const deadline = Date.now() + 5_000;
+  const pushCount = async (n: number, within = 5_000) => {
+    const deadline = Date.now() + within;
     while (pushes.length < n) {
       assert.ok(Date.now() < deadline, `expected ${n} push/event(s), saw ${pushes.length}`);
       await new Promise<void>((r) => { pushWaiters.push(r); setTimeout(r, 100); });
@@ -72,5 +90,12 @@ export async function serverWithHost(
   // Let the response to the last push be read and logged by the server.
   const settle = () => new Promise((r) => setTimeout(r, 200));
   const close = () => { conn.close(); child.kill(); rmSync(dir, { recursive: true, force: true }); };
-  return { pushes, call, request, notify, pushCount, settle, stderr: () => stderr, close };
+  /** Close the host's end of the connection, as a host that goes away does,
+   *  and resolve when the server's process has exited and its log is read. */
+  const hangUp = () => { conn.close(); return exited; };
+  /** Kill the server's process at once, as a crash does, and resolve when it
+   *  has exited and its log is read. */
+  const crash = () => { child.kill('SIGKILL'); return exited; };
+  const stored = () => JSON.parse(readFileSync(remindersFile, 'utf8')) as Array<Record<string, unknown>>;
+  return { pushes, call, request, notify, pushCount, settle, stored, stderr: () => stderr, close, hangUp, crash };
 }

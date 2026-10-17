@@ -42,7 +42,20 @@ can, a recurring one once for the periods it missed. `reminder_list` shows it
 that sends its policy only as a Notification, no wake is ever delivered, and
 `reminder_add` and `reminder_list` say that no reminder will fire there. While
 no wake can be delivered, the log says how many reminders won't fire and why,
-at start and at each policy change, add and cancel.
+at start, at each policy change, add and cancel, and when the host answers a
+reminder's push.
+
+A reminder changes only when the host takes its push: a one-shot the host took
+is removed, and a recurring one advances. One the host refused, or whose push
+failed or got no answer within 30 s, is held: `reminder_list` shows it with
+the reason and when, and it is tried once more at the host's next policy
+update, the next `reminder_add` or `reminder_cancel`, or a restart. A
+recurring one is also tried again an interval after it was refused or failed,
+so one such push doesn't stop it. Until the host takes it, the reminders file
+holds it as it was, so one whose push is still out when the server stops, or
+crashes, fires again at the next start. If the host had in fact taken such a
+push, or took one but answered after 30 s, the agent hears that reminder a
+second time when it is sent again.
 
 ## Silent mode
 

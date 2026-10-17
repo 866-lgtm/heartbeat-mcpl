@@ -3,7 +3,7 @@
 // that reads the server's log.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { POLICY, origin, serverWithHost } from './scripted-host.js';
+import { POLICY, logged, origin, serverWithHost } from './scripted-host.js';
 
 const MCP_ONLY = 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
 const PRE_05 = 'host sent featureSets/update only as a Notification, which cannot establish ready state (§6.7), '
@@ -11,15 +11,6 @@ const PRE_05 = 'host sent featureSets/update only as a Notification, which canno
 const NOT_READY = 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
   + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** Wait for the server to log `line`, whole. */
-async function logged(h: { stderr: () => string }, line: string) {
-  const deadline = Date.now() + 5_000;
-  while (!h.stderr().split('\n').includes(`[heartbeat-mcpl] ${line}`)) {
-    assert.ok(Date.now() < deadline, `expected the log line\n${line}\nin\n${h.stderr()}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
 
 test('on an MCP-only host, a stored reminder is counted in the log at start, and replies say none will fire there', async (t) => {
   const now = Date.now();
