@@ -1,19 +1,20 @@
 // A reminder changes only when the host answers its push. Taken, a one-shot is
 // removed and a recurring one advances; refused, or failed, it is held: listed
 // with the reason and when, not asked again on every fire, and tried once more
-// at the next policy update, add, cancel or restart. Until the host takes it,
-// the file holds it as it was. Before, it was removed or advanced as soon as
-// its push went out, so a refused push lost it with only a log line.
+// at the next policy update, add, cancel or restart, and a recurring one also
+// an interval after the refusal. Until the host takes it, the file holds it as
+// it was. Before, it was removed or advanced as soon as its push went out, so a
+// refused push lost it with only a log line.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { POLICY, origin, serverWithHost } from './scripted-host.js';
+import { POLICY, logged, origin, serverWithHost } from './scripted-host.js';
 import type { PushAnswer } from './scripted-host.js';
 
 type Host = Awaited<ReturnType<typeof serverWithHost>>;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const row = (id: string, fireAt: number, everySeconds: number | null) => ({ id, message: id, createdAt: fireAt - 60_000, fireAt, everySeconds });
 const refusedLine = 'A reminder whose push was refused or failed is tried again when the host next updates its settings, '
-  + 'when a reminder is added or cancelled, or when the server restarts.';
+  + 'when a reminder is added or cancelled, or when the server restarts, and a recurring one also an interval after it was refused or failed.';
 
 /** reminder_list once it matches `pattern`: the server reads a push's answer
  *  after the host sends it, so what the answer changes shows a little later. */
@@ -49,6 +50,9 @@ test('a one-shot whose push fails is held, listed with the reason and when, and 
   assert.equal(h.pushes.length, 1, 'tried once, not again on every fire');
   assert.match(list, /^rem_once \| next .* \(overdue; the push failed: Feature set not enabled: heartbeat, at [^)]+\) \| one-shot \| "rem_once"$/m);
   assert.ok(list.endsWith(`\n${refusedLine}`), list);
+  // A one-shot has no interval to wait for, so its line ends at the triggers.
+  await logged(h, 'reminder rem_once: the push failed: Feature set not enabled: heartbeat; '
+    + 'holding it until the next policy update, add, cancel or restart');
   // To the second, so a time from before the server started (such as the due time) can't pass.
   const at = refusedAt(list, 'rem_once');
   assert.ok(at >= Math.floor(startedAt / 1000) * 1000 && at <= listedAt, `listed as refused when the answer came (${at - startedAt} ms after the start)`);
@@ -79,6 +83,37 @@ test('a recurring reminder whose push the host refuses stays at its due time, an
   await h.pushCount(2);
   await listed(h, /^rem_hourly \| next .* \(~\d+s\)/m);
   assert.deepEqual(h.stored(), [{ ...seeded, fireAt: fireAt + 3_600_000 }], 'taken, it is next due an hour after the time the host refused');
+});
+
+test('a recurring reminder the host refuses is tried again an interval after each refusal, with nothing else happening, and goes on once taken', async (t) => {
+  // When each push reached the host. The server reads the host's answer after
+  // this, so a time the code counts an interval from comes later.
+  const arrived: number[] = [];
+  const fireAt = Date.now() - 1000;
+  const seeded = row('rem_5s', fireAt, 5);
+  // Refused at its first push and at its first retry, then taken.
+  const h = await serverWithHost((p) => {
+    if (origin(p).source !== 'reminder') return {};
+    arrived.push(Date.now());
+    return arrived.length <= 2 ? { result: { accepted: false, reason: 'busy' } } : {};
+  }, { reminders: [seeded] });
+  t.after(h.close);
+  await h.pushCount(1);
+  await listed(h, /^rem_5s \| next .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 5s/m);
+  await logged(h, 'reminder rem_5s: the host refused it: busy; '
+    + 'holding it until the next policy update, add, cancel or restart, or for its interval, 5s');
+  assert.deepEqual(h.stored(), [seeded], 'refused, the file holds it as it was');
+  // No policy update, add, cancel or restart: only its interval brings it back,
+  // and once taken it goes on an interval after the take, not at once.
+  await h.pushCount(4, 25_000);
+  const gaps = arrived.slice(1, 4).map((at, n) => at - arrived[n]!);
+  for (const [n, gap] of gaps.entries()) {
+    assert.ok(gap >= 5_000 && gap < 9_000, `push ${n + 2} came ${gap} ms after push ${n + 1}, not an interval: ${gaps}`);
+  }
+  assert.ok(h.pushes.every((p) => origin(p).reminderId === 'rem_5s'));
+  const after = await h.call('reminder_list');
+  assert.doesNotMatch(after, /refused|failed/, 'taken, its refusal is gone');
+  assert.notEqual((h.stored()[0] as { fireAt: number }).fireAt, fireAt, 'and it has advanced in the file');
 });
 
 test('a refused reminder is tried once more at a Notification and at a cancel, not at a malformed Notification, and a malformed Request clears its refusal', async (t) => {

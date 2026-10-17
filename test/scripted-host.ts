@@ -17,6 +17,15 @@ export const origin = (p: PushEventParams) => (p.origin ?? {}) as Record<string,
  *  (`{ accepted: true, … }` when neither is given). */
 export type PushAnswer = { error?: [number, string]; result?: unknown };
 
+/** Wait for the server to log `line`, whole. */
+export async function logged(h: { stderr: () => string }, line: string) {
+  const deadline = Date.now() + 5_000;
+  while (!h.stderr().split('\n').includes(`[heartbeat-mcpl] ${line}`)) {
+    assert.ok(Date.now() < deadline, `expected the log line\n${line}\nin\n${h.stderr()}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 /** Start the server on a fresh config, with `reminders` stored, and act as its
  *  host: initialize, send the policy as a Request, and answer each push/event
  *  as `answerPush` says, at once, or when the promise it returns settles. With
@@ -71,8 +80,8 @@ export async function serverWithHost(
   const notify = (method: string, params: unknown) => conn.sendNotification(method, params);
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     ((await conn.sendRequest('tools/call', { name, arguments: args }, 10_000)) as { content: Array<{ text: string }> }).content[0]!.text;
-  const pushCount = async (n: number) => {
-    const deadline = Date.now() + 5_000;
+  const pushCount = async (n: number, within = 5_000) => {
+    const deadline = Date.now() + within;
     while (pushes.length < n) {
       assert.ok(Date.now() < deadline, `expected ${n} push/event(s), saw ${pushes.length}`);
       await new Promise<void>((r) => { pushWaiters.push(r); setTimeout(r, 100); });

@@ -229,9 +229,9 @@ class HeartbeatServer {
    *  again at the next start rather than losing it. */
   private inFlight = new Set<string>();
   /** The reminders whose last push the host refused, or whose push failed:
-   *  when, and why. Arming skips them until the next retryRefused, so a host
-   *  that keeps refusing gets one try per trigger. It isn't saved either: the
-   *  file holds each as it was, so a restart tries it again. */
+   *  when, and why, until the next push of each is sent. dueAt says when each
+   *  is tried again. It isn't saved either: the file holds each as it was, so
+   *  a restart tries it again. */
   private refused = new Map<string, { at: number; reason: string }>();
 
   async serve(conn: McplConnection): Promise<void> {
@@ -670,7 +670,7 @@ class HeartbeatServer {
     const blocked = this.pushBlockedReason();
     const waiting = blocked ? `\n${this.heldText(blocked, false)}` : '';
     const refused = this.reminders.some((r) => this.refused.has(r.id))
-      ? '\nA reminder whose push was refused or failed is tried again when the host next updates its settings, when a reminder is added or cancelled, or when the server restarts.'
+      ? '\nA reminder whose push was refused or failed is tried again when the host next updates its settings, when a reminder is added or cancelled, or when the server restarts, and a recurring one also an interval after it was refused or failed.'
       : '';
     return `${this.reminders.length} reminder(s):\n${lines.join('\n')}${waiting}${refused}`;
   }
@@ -707,10 +707,9 @@ class HeartbeatServer {
         + `${this.neverDelivers() ? 'will fire on this host' : 'fires until a wake can be delivered'}: ${blocked}`);
       return;
     }
-    const armable = this.armable();
-    if (armable.length === 0) return;
-    const soonest = Math.min(...armable.map((r) => r.fireAt));
-    this.cancelReminderWake = callAt(soonest, () => this.processDueReminders());
+    const due = this.reminders.map((r) => this.dueAt(r)).filter((t): t is number => t !== null);
+    if (due.length === 0) return;
+    this.cancelReminderWake = callAt(Math.min(...due), () => this.processDueReminders());
   }
 
   /** A policy update, an add or a cancel: try each refused reminder again,
@@ -721,18 +720,24 @@ class HeartbeatServer {
     this.scheduleReminders();
   }
 
-  /** The reminders a fire may push. A refused one waits for the next
-   *  retryRefused, so a host that keeps refusing isn't asked on every fire,
-   *  and one in flight waits for the host's answer. */
-  private armable(): Reminder[] {
-    return this.reminders.filter((r) => !this.refused.has(r.id) && !this.inFlight.has(r.id));
+  /** When a reminder may next be pushed, or null while it may not be. One in
+   *  flight waits for the host's answer. One the host refused waits for the
+   *  next retryRefused, so a host that keeps refusing isn't asked on every
+   *  fire. A recurring one also comes due again an interval after the
+   *  refusal, so a refusal that no policy update follows doesn't stop it, and
+   *  a host that keeps refusing is asked again an interval after each refusal. */
+  private dueAt(rem: Reminder): number | null {
+    if (this.inFlight.has(rem.id)) return null;
+    const refused = this.refused.get(rem.id);
+    if (!refused) return rem.fireAt;
+    return rem.everySeconds === null ? null : refused.at + rem.everySeconds * 1000;
   }
 
   /** Push every reminder that is due. Nothing about it changes until the host
    *  answers (settleReminder); meanwhile it is in flight. */
   private processDueReminders(): void {
     const now = Date.now();
-    for (const rem of this.armable()) if (rem.fireAt <= now) this.fireReminder(rem);
+    for (const rem of this.reminders.filter((r) => (this.dueAt(r) ?? Infinity) <= now)) this.fireReminder(rem);
     this.scheduleReminders();
   }
 
@@ -745,6 +750,9 @@ class HeartbeatServer {
     );
     const kind = rem.everySeconds !== null ? 'recurring' : 'one-shot';
     if (sent) {
+      // Sent again, it's no longer refused: the host's answer to this push
+      // decides. One that isn't sent keeps its refusal, and waits as before.
+      this.refused.delete(rem.id);
       this.inFlight.add(rem.id);
       log(`fired reminder ${rem.id} (${kind})`);
     } else {
@@ -755,18 +763,19 @@ class HeartbeatServer {
   /** The host's answer to a reminder's push decides what becomes of it. Taken:
    *  a one-shot is removed, and a recurring one advances to its next future
    *  time. Refused, or the push failed: it stays as it was, and is marked
-   *  refused until the next retryRefused or restart. Cancelled while its push
-   *  was out: it stays gone, and nothing is re-armed, since the cancel was. Any
-   *  other answer re-arms. */
+   *  refused, which dueAt reads. Cancelled while its push was out: it stays
+   *  gone, and nothing is re-armed, since the cancel was. Any other answer
+   *  re-arms. */
   private settleReminder(id: string, refusal: string | null): void {
     this.inFlight.delete(id);
     const i = this.reminders.findIndex((r) => r.id === id);
     if (i === -1) return;
+    const rem = this.reminders[i]!;
     if (refusal !== null) {
       this.refused.set(id, { at: Date.now(), reason: refusal });
-      log(`reminder ${id}: ${refusal}; holding it until the next policy update, add, cancel or restart`);
+      log(`reminder ${id}: ${refusal}; holding it until the next policy update, add, cancel or restart`
+        + (rem.everySeconds === null ? '' : `, or for its interval, ${rem.everySeconds}s`));
     } else {
-      const rem = this.reminders[i]!;
       if (rem.everySeconds === null) {
         this.reminders.splice(i, 1);
       } else {
