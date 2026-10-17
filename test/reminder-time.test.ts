@@ -198,13 +198,17 @@ test('invalid calendar dates and forms other than an ISO calendar date are refus
   }
 });
 
-test('a reminder can hold exactly the times a Date can, both ends included', () => {
+test('a reminder can hold exactly the times a Date can, both ends included, and the range is named by those ends', () => {
   assert.equal(canHoldTime(8.64e15), true);
   assert.equal(canHoldTime(8.64e15 + 1), false);
   assert.equal(canHoldTime(-8.64e15), true);
   assert.equal(canHoldTime(-8.64e15 - 1), false);
   assert.equal(canHoldTime(Infinity), false);
   assert.equal(canHoldTime(Number.NaN), false);
+  // The refusals and log lines name the range with these, and the log test
+  // builds its expected lines from them, so they're pinned here.
+  assert.equal(Date.parse(FIRST_REMINDER_TIME), -8.64e15);
+  assert.equal(Date.parse(LAST_REMINDER_TIME), 8.64e15);
 });
 
 test('the log keeps each reminder a stored time drops or ends, whole, with the range', async () => {

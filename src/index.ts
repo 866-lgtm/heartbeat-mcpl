@@ -52,8 +52,10 @@ const DEFAULT_CONFIG: HeartbeatConfig = {
   message: '[heartbeat] Periodic self-check-in. Review anything pending — reminders, schedules, follow-ups — and act if needed; otherwise a brief note to yourself is fine.',
 };
 
-/** A scheduled wake. `everySeconds === null` ⇒ one-shot (dropped after it fires);
- *  otherwise `fireAt` advances by the interval after each fire. */
+/** A scheduled wake. `everySeconds === null` ⇒ one-shot, removed once the host
+ *  takes its push; otherwise `fireAt` advances to its next future time each
+ *  time the host takes one, and the reminder ends instead once that would pass
+ *  the last time a reminder can hold. */
 interface Reminder {
   id: string;
   message: string;
