@@ -111,7 +111,10 @@ test('a recurring reminder the host refuses is tried again an interval after eac
     assert.ok(gap >= 5_000 && gap < 9_000, `push ${n + 2} came ${gap} ms after push ${n + 1}, not an interval: ${gaps}`);
   }
   assert.ok(h.pushes.every((p) => origin(p).reminderId === 'rem_5s'));
-  const after = await h.call('reminder_list');
+  // Listed as next due, the last push is settled and saved: the file is
+  // written in place, so a read while the take is still being saved can catch
+  // it half written.
+  const after = await listed(h, /^rem_5s \| next .* \(~\d+s\) \| repeats every 5s/m);
   assert.doesNotMatch(after, /refused|failed/, 'taken, its refusal is gone');
   assert.notEqual((h.stored()[0] as { fireAt: number }).fireAt, fireAt, 'and it has advanced in the file');
 });
