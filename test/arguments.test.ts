@@ -44,13 +44,16 @@ test('a near miss, or another tool\'s argument or a near miss of one, is a probl
     ['"interval" isn\'t an argument configure takes; the closest is "intervalSeconds" or "intervalMinutes".']);
   assert.deepEqual(checkArguments(configure, { Seconds: 30 }, tools).problems,
     ['"Seconds" isn\'t an argument configure takes; the closest is "intervalSeconds".']);
-  // The suggestion names only what the slip was decided on: "channel_id" holds "channel", but is a slip for "channelId".
+  // The suggestion names only what the slip was decided on. Beside "channel", "channel_id" is a slip for "channelId"
+  // alone; sent without it, it holds "channel" too, so both are named.
   const send: ToolSchema = { name: 'send', inputSchema: { properties: {
     channel: { type: 'string', description: 'A channel.' },
     channelId: { type: 'string', description: 'A channel id.' },
   } } };
-  assert.deepEqual(checkArguments(send, { channel_id: 'c1' }, [send]).problems,
+  assert.deepEqual(checkArguments(send, { channel: 'general', channel_id: 'c1' }, [send]).problems,
     ['"channel_id" isn\'t an argument send takes; the closest is "channelId".']);
+  assert.deepEqual(checkArguments(send, { channel_id: 'c1' }, [send]).problems,
+    ['"channel_id" isn\'t an argument send takes; the closest is "channel" or "channelId".']);
   assert.deepEqual(checkArguments(list, { id: 'rem_1' }, tools).problems,
     ['"id" is cancel\'s argument, not list\'s; list takes no arguments.']);
   assert.deepEqual(checkArguments(list, { Id: 'rem_1' }, tools).problems,
@@ -64,8 +67,23 @@ test('a key like nothing here is ignored, unless it is all a tool that takes arg
     problems: ['It doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".'],
     ignored: [],
   });
-  // A key that holds an argument's name is another name, usually an extra that explains it.
+  // Beside the argument whose name it holds, a key is an extra that explains it.
   assert.deepEqual(checkArguments(configure, { paused: true, pausedReason: 'quiet' }, tools), { problems: [], ignored: ['pausedReason'] });
+});
+
+test('a key that holds an argument\'s whole name is a slip for it sent without it, and an extra beside it', () => {
+  assert.deepEqual(checkArguments(configure, { pausedReason: 'quiet' }, tools).problems,
+    ['"pausedReason" isn\'t an argument configure takes; the closest is "paused".']);
+  assert.deepEqual(checkArguments(configure, { heartbeatIntervalMinutes: 30, paused: false }, tools).problems,
+    ['"heartbeatIntervalMinutes" isn\'t an argument configure takes; the closest is "intervalMinutes".']);
+  // Holding two names, both sent without it, it names both.
+  assert.deepEqual(checkArguments(configure, { pausedMode: true }, tools).problems,
+    ['"pausedMode" isn\'t an argument configure takes; the closest is "paused" or "mode".']);
+  // Another tool's argument, held whole.
+  assert.deepEqual(checkArguments(list, { intervalMinutesValue: 5 }, tools).problems,
+    ['"intervalMinutesValue" is close to "intervalMinutes", configure\'s argument, not one list takes; list takes no arguments.']);
+  // A name of a letter or two is in too many keys to count: "valid" is no slip for "id".
+  assert.deepEqual(checkArguments(list, { valid: true }, tools), { problems: [], ignored: ['valid'] });
 });
 
 test('the note on ignored keys names them and every argument the tool takes, applied or refused', () => {

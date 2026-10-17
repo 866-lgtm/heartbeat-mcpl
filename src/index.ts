@@ -491,7 +491,7 @@ class HeartbeatServer {
 
   /** Every argument a call sends is applied, or the call is refused, applies
    *  nothing, and names each problem at once: the schema's (checkArguments)
-   *  and the tool's own. A key that no tool here takes, and that is close to
+   *  and the tool's own. A key that no tool here takes, and that is a slip for
    *  none of their arguments, does nothing either way: an applied call's
    *  result names it as ignored, and a refused call's names it too. */
   private handleToolCall(name: string, rawArgs: unknown) {

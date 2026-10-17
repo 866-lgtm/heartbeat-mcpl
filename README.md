@@ -19,11 +19,14 @@ Every argument a tool call sends is applied, or the call is refused, changes
 nothing and names each problem at once: a value of the wrong type or out of
 range, two arguments that contradict each other, or a name the tool doesn't
 take that is a slip for one it does, or for one another of these tools takes.
-A slip is the same name ignoring case, a few edits away, or a part of it of
-three letters or more, such as `mode` for `deliveryMode`. Any other name a
-tool doesn't take is ignored, and the result says so and what the tool takes,
-unless the call sends nothing else to a tool that takes arguments, which then
-refuses it. Lengths are kept to the millisecond.
+A slip is the same name ignoring case, a few edits away, a part of it of three
+letters or more, such as `mode` for `deliveryMode`, or a longer name that holds
+it, sent without it, such as `heartbeatIntervalMinutes` for `intervalMinutes`.
+Sent beside the name it holds, such as `pausedReason` beside `paused`, it is an
+extra. Any other name a tool doesn't take is ignored, extras included, and the
+result says so and what the tool takes, unless the call sends nothing else to a
+tool that takes arguments, which then refuses it. Lengths are kept to the
+millisecond.
 
 ## Reminders
 

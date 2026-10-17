@@ -137,10 +137,19 @@ test('every argument is applied, or the call is refused and changes nothing', as
     assert.equal(part.isError, true, part.text);
     assert.equal(part.text, 'heartbeat_configure: nothing was changed. "mode" isn\'t an argument heartbeat_configure takes; the closest is "deliveryMode".');
     assert.equal(stored(config), before);
-    // A key that holds an argument's name is another name, usually an extra: ignored and named.
+    // Beside the argument whose name it holds, a key is an extra: ignored and named.
     const extra = await call('heartbeat_configure', { paused: false, pausedReason: 'testing' });
     assert.equal(extra.isError, false, extra.text);
     assert.match(extra.text, /^Updated\. Heartbeat ACTIVE .* heartbeat_configure ignored "pausedReason", which it doesn't take; it takes "intervalSeconds"/);
+    // Sent without its argument, such a key is that argument under another name: refused, applying nothing.
+    const held = stored(config);
+    const inPlace = await call('heartbeat_configure', { heartbeatIntervalMinutes: 30, paused: true });
+    assert.equal(inPlace.isError, true, inPlace.text);
+    assert.equal(inPlace.text, 'heartbeat_configure: nothing was changed. "heartbeatIntervalMinutes" isn\'t an argument heartbeat_configure takes; the closest is "intervalMinutes".');
+    const reasonAlone = await call('heartbeat_configure', { pausedReason: 'testing' });
+    assert.equal(reasonAlone.isError, true, reasonAlone.text);
+    assert.equal(reasonAlone.text, 'heartbeat_configure: nothing was changed. "pausedReason" isn\'t an argument heartbeat_configure takes; the closest is "paused".');
+    assert.equal(stored(config), held);
   });
 
   await t.test('another tool\'s argument is refused where it would do nothing', async () => {

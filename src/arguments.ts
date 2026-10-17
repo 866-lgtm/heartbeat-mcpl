@@ -27,11 +27,11 @@ export interface ArgumentCheck {
 }
 
 /** Check `args` against `tool`'s schema. A key the tool doesn't take is a
- *  problem when it is a near miss (isNearMiss) of one it does, or of an
- *  argument another of `tools` takes, since either way the agent believes the
- *  call did something it didn't. Any other key is ignored, unless every key
- *  sent is one, since a call to a tool that takes arguments then can only
- *  have meant something it didn't do. */
+ *  problem when it is a slip (isSlip) for one it does, or for an argument
+ *  another of `tools` takes, since either way the agent believes the call did
+ *  something it didn't. Any other key is ignored, unless every key sent is
+ *  one, since a call to a tool that takes arguments then can only have meant
+ *  something it didn't do. */
 export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly ToolSchema[]): ArgumentCheck {
   const problems: string[] = [];
   const ignored: string[] = [];
@@ -46,12 +46,12 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
     if (!Object.hasOwn(properties, key)) {
       const others = tools.filter((other) => other !== tool);
       const theirs = [...new Set(others.flatMap((other) => Object.keys(other.inputSchema.properties)))];
-      const slips = names.filter((name) => isNearMiss(key, name));
+      const slips = names.filter((name) => isSlip(key, name, args));
       if (slips.length > 0) {
         // Suggest only the names the slip was decided on, ranked, so the suggestion never names another.
         problems.push(`"${key}" isn't an argument ${tool.name} takes; the closest is ${orList(closestNames(key, slips))}.`);
-      } else if (theirs.some((name) => isNearMiss(key, name))) {
-        const meant = closestNames(key, theirs.filter((name) => isNearMiss(key, name)), 1)[0];
+      } else if (theirs.some((name) => isSlip(key, name, args))) {
+        const meant = closestNames(key, theirs.filter((name) => isSlip(key, name, args)), 1)[0];
         const owners = joinNames(others.filter((other) => Object.hasOwn(other.inputSchema.properties, meant)).map((other) => `${other.name}'s`), 'and');
         problems.push(meant === key
           ? `"${key}" is ${owners} argument, not ${tool.name}'s; ${takes(tool, tool.name)}.`
@@ -76,6 +76,19 @@ export function checkArguments(tool: ToolSchema, args: unknown, tools: readonly 
     if (!Object.hasOwn(args, key)) problems.push(`"${key}" is missing: ${firstSentence(properties[key].description)}`);
   }
   return { problems, ignored };
+}
+
+/** Whether `key` is a slip for argument `name`: a near miss (isNearMiss), or
+ *  a longer key that holds `name` whole, ignoring case, sent without it. Sent
+ *  beside its argument, such a key is an extra that explains it, such as
+ *  `pausedReason` beside `paused`; sent in its place, it is the argument under
+ *  another name, such as `heartbeatIntervalMinutes` for `intervalMinutes`. The
+ *  name needs three characters or more, as a part of a name does for
+ *  isNearMiss, since a letter or two is in nearly every name. Only the whole
+ *  call can tell the two apart, so this sits beside isNearMiss, not in it. */
+function isSlip(key: string, name: string, args: object): boolean {
+  if (isNearMiss(key, name)) return true;
+  return name.length >= 3 && key.toLowerCase().includes(name.toLowerCase()) && !Object.hasOwn(args, name);
 }
 
 /** The sentence a result ends with when the call sent keys that do nothing:
