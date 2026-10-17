@@ -172,13 +172,15 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
   return `${givenList(length)} ${length.given.length < 2 ? verbs[0] : verbs[1]}`;
 }
 
+// closestNames, isNearMiss, noiseLimit and editDistance, from here to the end
+// of this file, are agent-framework's closest-names helper
+// (src/closest-names.ts), copied unchanged rather than imported, since it
+// isn't published, so this server and agent-framework agree on what counts as
+// a slip and on what they suggest.
+
 /**
  * The names someone most likely meant, when the one they gave matches none:
- * for a refusal's "the closest is". This, isNearMiss, noiseLimit
- * and editDistance are agent-framework's closest-names helper
- * (src/closest-names.ts), copied unchanged rather than imported, since it
- * isn't published, so the house's tools agree on what counts as a slip and
- * on what they suggest.
+ * for a refusal's "did you mean", such as a tool name an agent got wrong.
  *
  * Case is ignored. A candidate that the name matches as a whole `--` segment
  * ("ls" for "workspace--ls"), then one that starts with it or that it starts
@@ -202,8 +204,10 @@ export function closestNames(name: string, candidates: readonly string[], max = 
       : shorter >= 3 && (other.startsWith(wanted) || wanted.startsWith(other)) ? 2
       : shorter >= 3 && (other.includes(wanted) || wanted.includes(other)) ? 3
       : 4;
+    // In tiers 0 to 3 one name holds the other, so the length difference is
+    // already their distance, and a long name skips the edit table.
     const limit = tier === 4 ? noiseLimit(wanted, other) : Infinity;
-    const distance = editDistance(wanted, other, limit);
+    const distance = tier === 4 ? editDistance(wanted, other, limit) : Math.abs(wanted.length - other.length);
     if (distance > limit) continue;
     ranked.push({ candidate, tier, distance });
   }
@@ -216,10 +220,11 @@ export function closestNames(name: string, candidates: readonly string[], max = 
  * Whether `name` looks like a slip for `candidate`, ignoring case: the same;
  * a few edits apart, where a transposition counts as one edit; or, at three
  * characters or more, a part of it, which is a shortened attempt at it
- * (`mode` for `deliveryMode`, `interval` for `refillIntervalMs`). Only in
- * that direction: a name that holds the candidate is another name, usually an
- * extra that explains it (`channel_note` beside `channel`). Beyond these, two
- * names are different names rather than one mistyped.
+ * (`mode` for `deliveryMode`, `interval` for `refillIntervalMs`). A part
+ * counts only that way round: a name that holds the candidate, and is more
+ * edits from it than a slip allows, is another name, usually an extra that
+ * explains it (`channel_note` beside `channel`, where `channels` is a slip).
+ * Beyond these, two names are different names rather than one mistyped.
  */
 export function isNearMiss(name: string, candidate: string): boolean {
   const a = name.toLowerCase(), b = candidate.toLowerCase();
