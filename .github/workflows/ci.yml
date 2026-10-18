@@ -20,7 +20,8 @@ jobs:
       # Node fails here rather than for someone running the floor; and the
       # newest release. Between them, each maintained Node line between
       # those two majors (24 today), since each line ships its own built-in
-      # fetch.
+      # fetch. package.json's @types/node pin names the same floor, so the
+      # type check reads that Node's API; it moves with the floor too.
       matrix:
         node: ['22.12.0', '24', 'latest']
 
