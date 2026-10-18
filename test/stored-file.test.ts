@@ -20,10 +20,11 @@ function fresh(t: test.TestContext): string {
 
 test('no file is nothing stored yet, and a file the store writes is read', (t) => {
   const path = fresh(t);
-  assert.deepEqual(readStored(path, 'reminders', Array.isArray), { value: undefined, bytes: null, unused: false, unsaveable: null, note: null });
+  assert.deepEqual(readStored(path, 'reminders', Array.isArray),
+    { value: undefined, bytes: null, unused: false, replaced: false, unsaveable: null, note: null });
   writeFileSync(path, '[{"id":"rem_1"}]');
   assert.deepEqual(readStored(path, 'reminders', Array.isArray),
-    { value: [{ id: 'rem_1' }], bytes: Buffer.from('[{"id":"rem_1"}]'), unused: false, unsaveable: null, note: null });
+    { value: [{ id: 'rem_1' }], bytes: Buffer.from('[{"id":"rem_1"}]'), unused: false, replaced: false, unsaveable: null, note: null });
 });
 
 test('a file that can\'t be read at all is left alone, and nothing may save over it', (t) => {
@@ -43,7 +44,7 @@ test('a file that isn\'t JSON, or isn\'t the shape its store writes, is copied a
     const copy = copyOf(path, text);
     const stored = readStored(path, 'reminders', Array.isArray);
     assert.deepEqual(stored, {
-      value: undefined, bytes: Buffer.from(text), unused: true, unsaveable: null,
+      value: undefined, bytes: Buffer.from(text), unused: true, replaced: false, unsaveable: null,
       note: `the reminders file ${path} ${unlike}; copied it to ${copy}, and starting without it`,
     });
     assert.equal(readFileSync(copy, 'utf8'), text);
@@ -55,18 +56,44 @@ test('a file that isn\'t JSON, or isn\'t the shape its store writes, is copied a
   }
 });
 
-test('a file that isn\'t UTF-8 is copied aside, though read with replacement characters it would parse', (t) => {
+// 0xe9 is é in Latin-1, and no character in UTF-8.
+const latin1 = (before: string, after: string) => Buffer.concat([Buffer.from(before), Buffer.from([0xe9]), Buffer.from(after)]);
+
+test('a file with bytes that aren\'t UTF-8 is copied aside, and read with replacement characters in their place', (t) => {
   const path = fresh(t);
-  // 0xe9 is é in Latin-1, and no character in UTF-8.
-  const bytes = Buffer.concat([Buffer.from('[{"id":"rem_1","message":"caf'), Buffer.from([0xe9]), Buffer.from('"}]')]);
+  const bytes = latin1('[{"id":"rem_1","message":"caf', '"}]');
   writeFileSync(path, bytes);
   const copy = `${path}.unreadable-${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}`;
   const stored = readStored(path, 'reminders', Array.isArray);
   assert.deepEqual(stored, {
-    value: undefined, bytes, unused: true, unsaveable: null,
-    note: `the reminders file ${path} isn't UTF-8; copied it to ${copy}, and starting without it`,
+    value: [{ id: 'rem_1', message: 'caf\ufffd' }], bytes, unused: false, replaced: true, unsaveable: null,
+    note: `the reminders file ${path} holds bytes that aren't UTF-8; copied it to ${copy}, and starting with what it holds, `
+      + 'read with replacement characters',
   });
   assert.ok(readFileSync(copy).equals(bytes), 'the copy holds the byte');
+});
+
+test('a file with bytes that aren\'t UTF-8 whose copy fails is still read, and nothing may save over it', (t) => {
+  const path = fresh(t);
+  const bytes = latin1('[{"id":"rem_1","message":"caf', '"}]');
+  writeFileSync(path, bytes);
+  mkdirSync(`${path}.unreadable-${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}`);
+  const stored = readStored(path, 'reminders', Array.isArray);
+  assert.deepEqual(stored.value, [{ id: 'rem_1', message: 'caf\ufffd' }]);
+  assert.equal(stored.replaced, true);
+  assert.match(String(stored.unsaveable), /holds bytes that aren't UTF-8, and copying it to .* failed/);
+});
+
+test('a file with bytes that aren\'t UTF-8, and isn\'t what its store writes even read that way, is copied aside and not used', (t) => {
+  for (const [bytes, unlike] of [[latin1('[{"id": "caf', ''), "isn't JSON"], [latin1('{"id":"caf', '"}'), "isn't what this server writes"]] as const) {
+    const path = fresh(t);
+    writeFileSync(path, bytes);
+    const stored = readStored(path, 'reminders', Array.isArray);
+    assert.equal(stored.value, undefined);
+    assert.equal(stored.unused, true);
+    assert.equal(stored.replaced, false);
+    assert.match(String(stored.note), new RegExp(`^the reminders file .* ${unlike}; copied it to .*, and starting without it$`));
+  }
 });
 
 test('a file that starts with a byte order mark is read past it', (t) => {
@@ -108,7 +135,7 @@ test('a file at the copy\'s name that holds something else is never taken for th
   // to the same text: 0xff and 0xfe are each invalid UTF-8, read as U+FFFD.
   const cases: [Buffer, Buffer, string][] = [
     [Buffer.from('not json'), Buffer.from('something else'), "isn't JSON"],
-    [Buffer.from([0x5b, 0xff]), Buffer.from([0x5b, 0xfe]), "isn't UTF-8"],
+    [Buffer.from([0x5b, 0xff]), Buffer.from([0x5b, 0xfe]), "isn't JSON"],
   ];
   for (const [file, other, unlike] of cases) {
     const path = fresh(t);

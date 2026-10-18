@@ -20,12 +20,16 @@ One that can't be read at all is left as it is, and nothing is saved over
 it until a restart reads it again: the server runs on what it holds in
 memory meanwhile. One that reads but isn't what the server writes, such as
 a file a crash tore during a save, is copied aside first, to
-`<file>.unreadable-<hash>`, and the server starts without it. A reminders
-file with a row the server can't load is copied aside the same way, and the
-server starts with the rest. The log names the copy. While a file couldn't
-be used, each reply that shows or counts what its store holds says so, and
-a call whose change isn't saved, because its file can't be used or writing
-it failed, says that too.
+`<file>.unreadable-<hash>`, and the server starts without it. One the
+server can use in part is copied aside the same way, and the server starts
+with what it can use: a file with bytes that aren't UTF-8, such as one
+edited in another encoding, read with replacement characters (U+FFFD) in
+their place, and a reminders file with rows the server can't load. The log
+names the copy, and when a copy can't be made, the file is left as one that
+can't be read is. While a file couldn't be used, or was used only in part,
+each reply that shows or counts what its store holds says so, and a call
+whose change isn't saved, because its file couldn't be read or copied aside
+or writing it failed, says that too.
 
 Every argument a tool call sends is applied, or the call is refused, changes
 nothing and names each problem at once: a value of the wrong type or out of

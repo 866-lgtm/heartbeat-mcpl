@@ -8,13 +8,16 @@
  *   its content, so it stays as it is, and nothing saves over it until a
  *   restart reads it again. The server runs on what it holds in memory
  *   meanwhile.
- * - A file that reads but isn't what the server writes (not UTF-8, not JSON,
- *   or not the shape its store writes) is copied aside first, to
+ * - A file that reads but isn't what the server writes (not JSON, or not the
+ *   shape its store writes) is copied aside first, to
  *   `<file>.unreadable-<hash>`, named by its bytes so that starting on the
  *   same file again keeps one copy. The store then starts without it, and its
- *   next save writes over the file. A store that can load only part of a
- *   file keeps a copy of it the same way (keepAside) and starts with the
- *   rest. When the copy fails, the file is kept as one that can't be read is.
+ *   next save writes over the file.
+ * - A file the server can use only in part is copied aside the same way, and
+ *   the store starts with what it can use: one with bytes that aren't UTF-8,
+ *   read with replacement characters in their place, and, in the reminders'
+ *   store, one with rows it can't load (keepAside).
+ * - When the copy fails, the file is kept as one that can't be read is.
  *
  * Saves write the file in place, so it keeps its mode, owner, group and
  * links. A crash during a save can tear the file; the next start then copies
@@ -26,16 +29,21 @@ import { createHash } from 'node:crypto';
 /** What a stored file gave its store. `value` is its parsed content when that
  *  is what the store writes, and undefined otherwise; `bytes` is what the
  *  file held, whenever it could be read, so with every `value`. `unused` says
- *  there was a file whose content the store starts without. `unsaveable`,
- *  when set, says why nothing may be saved over the file until a restart
- *  reads it again. `note` is the log line for whoever runs the host, when
- *  there is one. */
-export interface Stored { value: unknown; bytes: Buffer | null; unused: boolean; unsaveable: string | null; note: string | null; }
+ *  there was a file whose content the store starts without, and `replaced`
+ *  that `value` holds replacement characters for bytes that weren't UTF-8.
+ *  `unsaveable`, when set, says why nothing may be saved over the file until
+ *  a restart reads it again. `note` is the log line for whoever runs the
+ *  host, when there is one. */
+export interface Stored {
+  value: unknown; bytes: Buffer | null; unused: boolean; replaced: boolean; unsaveable: string | null; note: string | null;
+}
 
-/** UTF-8, with no byte that isn't. A byte order mark at the start, which an
- *  editor may add, carries nothing, so it's read past, and the next save
+/** UTF-8, with no byte that isn't, and the same with replacement characters
+ *  (U+FFFD) for bytes that aren't. A byte order mark at the start, which an
+ *  editor may add, carries nothing, so both read past it, and the next save
  *  leaves it out. */
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
+const UTF8_REPLACING = new TextDecoder('utf-8');
 
 /** What keeping a file aside left: why nothing may be saved over it, if the
  *  copy failed, and the log line. */
@@ -47,23 +55,37 @@ export function readStored(path: string, what: string, isWritten: (value: unknow
   try {
     bytes = readFileSync(path);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { value: undefined, bytes: null, unused: false, unsaveable: null, note: null };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { value: undefined, bytes: null, unused: false, replaced: false, unsaveable: null, note: null };
+    }
     const unsaveable = `the ${what} file ${path} couldn't be read (${(e as Error).message})`;
-    return { value: undefined, bytes: null, unused: true, unsaveable, note: `${unsaveable}; nothing is saved over it until a restart reads it again` };
+    return {
+      value: undefined, bytes: null, unused: true, replaced: false, unsaveable,
+      note: `${unsaveable}; nothing is saved over it until a restart reads it again`,
+    };
   }
-  // The server writes UTF-8, so a file that isn't, by even one byte, is
-  // copied aside, rather than read with replacement characters that the next
-  // save would write over those bytes.
-  let text: string | undefined;
-  try { text = UTF8.decode(bytes); } catch { /* isn't UTF-8 */ }
+  // The server writes UTF-8. A file with bytes that aren't, such as one
+  // edited in another encoding, is read with replacement characters in their
+  // place, so the store keeps what it can use, and it's copied aside first,
+  // since the next save writes those characters over the bytes.
+  let replaced = false;
+  let text: string;
+  try {
+    text = UTF8.decode(bytes);
+  } catch {
+    text = UTF8_REPLACING.decode(bytes);
+    replaced = true;
+  }
   let value: unknown;
-  let parsed = text !== undefined;
-  if (text !== undefined) {
-    try { value = JSON.parse(text); } catch { parsed = false; }
+  let parsed = true;
+  try { value = JSON.parse(text); } catch { parsed = false; }
+  if (parsed && isWritten(value)) {
+    if (!replaced) return { value, bytes, unused: false, replaced: false, unsaveable: null, note: null };
+    const kept = keepAside(path, what, bytes, "holds bytes that aren't UTF-8", 'starting with what it holds, read with replacement characters');
+    return { value, bytes, unused: false, replaced: true, ...kept };
   }
-  if (parsed && isWritten(value)) return { value, bytes, unused: false, unsaveable: null, note: null };
-  const unlike = text === undefined ? `isn't UTF-8` : parsed ? `isn't what this server writes` : `isn't JSON`;
-  return { value: undefined, bytes, unused: true, ...keepAside(path, what, bytes, unlike, 'starting without it') };
+  const unlike = parsed ? `isn't what this server writes` : `isn't JSON`;
+  return { value: undefined, bytes, unused: true, replaced: false, ...keepAside(path, what, bytes, unlike, 'starting without it') };
 }
 
 /** Copy `path`, the `what` file, which held `bytes`, aside before anything
@@ -91,11 +113,31 @@ function copyAside(path: string, copy: string, bytes: Buffer): void {
   }
 }
 
-/** What a reply adds when the change it made can't be saved, since saving
- *  would write over a file whose content is on disk nowhere else. */
-export function unsavedNote(what: string): string {
-  return `This change can't be saved, because saving would write over a ${what} file this server couldn't read or copy, `
-    + "so it won't last past a restart. Calling again won't change that; ask whoever runs this host if you need it kept.";
+/** Why nothing may be saved over a file until a restart reads it again: it
+ *  couldn't be read, or it couldn't be copied aside. */
+export type Unsaveable = 'unread' | 'uncopied';
+
+/** What a reply adds when the change it made can't be saved, since its file
+ *  holds what is on disk nowhere else, with what whoever runs the host can do
+ *  so that a restart reads it again. What stopped the server differs (a mode,
+ *  a directory at the path, another file at the copy's name, a full disk),
+ *  and its log names it. */
+export function unsavedNote(what: string, why: Unsaveable): string {
+  const [couldnt, fix] = why === 'unread'
+    ? [`read the ${what} file`, 'what stops the server reading the file']
+    : [`copy the ${what} file aside`, 'what stopped the copy'];
+  return `This change can't be saved: this server couldn't ${couldnt}, and saves nothing over it until a restart reads it again, `
+    + "so the change won't last past a restart. Calling again won't change that; if you need it kept, ask whoever runs this "
+    + `host to fix ${fix}, as its log says, and restart it.`;
+}
+
+/** What a reply that shows a store adds when this start read some of its
+ *  file's text with replacement characters, since bytes there weren't UTF-8.
+ *  The file's bytes are kept: in its copy, or in the file itself when the
+ *  copy failed and nothing may be saved over it. */
+export function replacedNote(what: string): string {
+  return `Some text in the ${what} file couldn't be read, so it was loaded with replacement characters (\ufffd) in its place. `
+    + 'The original is kept; ask whoever runs this host if you need it.';
 }
 
 /** What a reply that shows or counts the reminders adds when this start
@@ -118,5 +160,6 @@ export const CONFIG_NOT_LOADED = "The config file couldn't be used at start, so 
 export function failedSaveNote(what: string): string {
   return `This change wasn't saved, because writing the ${what} file failed, so as things stand it won't last past a restart, `
     + 'and the failed write may also have left the file missing what was saved before. A later save of that file that goes through '
-    + 'saves everything again; if it keeps happening, ask whoever runs this host.';
+    + 'saves everything again; if it keeps happening, ask whoever runs this host to fix what stops the server writing the file, '
+    + 'as its log says.';
 }

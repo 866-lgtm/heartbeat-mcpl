@@ -7,12 +7,13 @@
  *   1. The ambient heartbeat — one global periodic wake (intervalSeconds,
  *      paused, message), configured via heartbeat_* tools. Unchanged.
  *   2. Reminders — any number of one-shot or recurring wakes, each with its own
- *      message, added/listed/cancelled via reminder_* tools. Persisted so they
+ *      message, added/listed/cancelled via reminder_* tools. Saved so they
  *      survive a server restart.
  *
- * Ambient config persists to $HEARTBEAT_CONFIG_FILE (default
- * ./heartbeat-config.json); reminders to $HEARTBEAT_REMINDERS_FILE (default
- * ./heartbeat-reminders.json).
+ * Ambient config is saved to $HEARTBEAT_CONFIG_FILE (default
+ * ./heartbeat-config.json), and reminders to $HEARTBEAT_REMINDERS_FILE
+ * (default ./heartbeat-reminders.json). A reply says when a change can't be
+ * or wasn't saved; stored-file.ts reads a file the server can't fully use.
  *
  * Usage: heartbeat-mcpl --stdio
  */
@@ -30,7 +31,9 @@ import { callAt } from './timer.js';
 import { HOST_GONE, heldNote, wakeBlocked } from './wake-blocked.js';
 import type { WakeBlocked } from './wake-blocked.js';
 import { describeThrown, noSuchTool, thrownForLog, toolThrew } from './call-texts.js';
-import { CONFIG_NOT_LOADED, failedSaveNote, keepAside, readStored, remindersNotLoadedNote, unsavedNote } from './stored-file.js';
+import {
+  CONFIG_NOT_LOADED, failedSaveNote, keepAside, readStored, remindersNotLoadedNote, replacedNote, unsavedNote, type Stored, type Unsaveable,
+} from './stored-file.js';
 import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
@@ -83,24 +86,35 @@ function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
 let silentFallbackExplained = false;
 /** Why the config file, or the reminders file, mustn't be saved over until a
  *  restart reads it again (see stored-file.ts), or null while it may be. */
-let configUnsaveable: string | null = null;
-let remindersUnsaveable: string | null = null;
-/** Whether this start couldn't load the config file, and how much of the
- *  reminders file it couldn't load (all, some, or null for none), so that a
- *  reply showing a store doesn't present it as what was saved. */
+let configUnsaveable: Unsaveable | null = null;
+let remindersUnsaveable: Unsaveable | null = null;
+/** Why a store's file may not be saved over: a file that couldn't be read
+ *  has no bytes, and one that could has them and couldn't be copied aside. */
+const unsaveable = (file: Stored): Unsaveable | null => (file.unsaveable ? (file.bytes ? 'uncopied' : 'unread') : null);
+/** Whether this start couldn't load the config file, how much of the
+ *  reminders file it couldn't load (all, some, or null for none), and whether
+ *  it read either file's text with replacement characters, so that a reply
+ *  showing a store doesn't present it as what was saved. */
 let configNotLoaded = false;
 let remindersNotLoaded: 'all' | 'some' | null = null;
+let configReplaced = false;
+let remindersReplaced = false;
 /** The note a reply that shows the schedule, or shows or counts the
- *  reminders, adds while this start couldn't load what the file held. */
-const configNote = () => (configNotLoaded ? CONFIG_NOT_LOADED : null);
-const remindersNote = () => (remindersNotLoaded ? remindersNotLoadedNote(remindersNotLoaded === 'all') : null);
+ *  reminders, adds while what this start loaded isn't what the file held. */
+const configNote = () => (configNotLoaded ? CONFIG_NOT_LOADED : configReplaced ? replacedNote('config') : null);
+const remindersNote = () => {
+  if (remindersNotLoaded === 'all') return remindersNotLoadedNote(true);
+  const notes = [remindersNotLoaded === 'some' ? remindersNotLoadedNote(false) : '', remindersReplaced ? replacedNote('reminders') : ''];
+  return notes.filter(Boolean).join(' ') || null;
+};
 const isObject = (x: unknown) => typeof x === 'object' && x !== null && !Array.isArray(x);
 
 function loadConfig(): HeartbeatConfig {
   const file = readStored(CONFIG_PATH, 'config', isObject);
   if (file.note) log(file.note);
-  configUnsaveable = file.unsaveable;
+  configUnsaveable = unsaveable(file);
   configNotLoaded = file.unused;
+  configReplaced = file.replaced;
   if (file.value === undefined) return { ...DEFAULT_CONFIG };
   const merged = { ...DEFAULT_CONFIG, ...(file.value as object) } as HeartbeatConfig;
   if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
@@ -137,7 +151,7 @@ function loadConfig(): HeartbeatConfig {
 /** Save the config: null when the file now holds it, or else the note a reply
  *  adds about the change it made, which this save didn't keep. */
 function saveConfig(c: HeartbeatConfig): string | null {
-  if (configUnsaveable) return unsavedNote('config');
+  if (configUnsaveable) return unsavedNote('config', configUnsaveable);
   try {
     writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
     return null;
@@ -164,8 +178,9 @@ function isStoredReminder(x: unknown): x is StoredReminder {
 function loadReminders(): Reminder[] {
   const file = readStored(REMINDERS_PATH, 'reminders', Array.isArray);
   if (file.note) log(file.note);
-  remindersUnsaveable = file.unsaveable;
+  remindersUnsaveable = unsaveable(file);
   remindersNotLoaded = file.unused ? 'all' : null;
+  remindersReplaced = file.replaced;
   if (!Array.isArray(file.value) || !file.bytes) return [];
   const parsed: unknown[] = file.value;
   // A row that isn't a reminder this server wrote can't be loaded. The log
@@ -194,7 +209,7 @@ function loadReminders(): Reminder[] {
   if (holdable.length < parsed.length) {
     const kept = keepAside(REMINDERS_PATH, 'reminders', file.bytes, "holds rows this server can't load", 'starting with the rest');
     log(kept.note);
-    remindersUnsaveable = kept.unsaveable;
+    remindersUnsaveable = kept.unsaveable ? 'uncopied' : null;
     remindersNotLoaded = holdable.length === 0 ? 'all' : 'some';
   }
   // A stored interval means what reminder_add made of it when it was
@@ -215,7 +230,7 @@ function loadReminders(): Reminder[] {
 /** Save the reminders: null when the file now holds them, or else the note a
  *  reply adds about the change it made, which this save didn't keep. */
 function saveReminders(reminders: Reminder[]): string | null {
-  if (remindersUnsaveable) return unsavedNote('reminders');
+  if (remindersUnsaveable) return unsavedNote('reminders', remindersUnsaveable);
   try {
     writeFileSync(REMINDERS_PATH, JSON.stringify(reminders, null, 2));
     return null;
@@ -810,10 +825,12 @@ class HeartbeatServer {
     // this start couldn't load the reminders file, the id may be in it, and
     // both replies say so.
     const note = remindersNote();
+    // Reminders may be missing here only while some of the file didn't load.
+    const held = remindersNotLoaded ? ' held here' : '';
     if (this.reminders.length === before) {
-      return this.refuse('reminder_cancel', [`No reminder${note ? ' held here' : ''} has the id "${id}". If it was a one-off that has fired, `
-        + `or it was cancelled already, there's nothing more to do. Otherwise, reminder_list shows the pending ids`
-        + (note ? ` held here. ${note}` : '.')]);
+      return this.refuse('reminder_cancel', [`No reminder${held} has the id "${id}". If it was a one-off that has fired, `
+        + `or it was cancelled already, there's nothing more to do. Otherwise, reminder_list shows the pending ids${held}.`
+        + (note ? ` ${note}` : '')]);
     }
     const unsaved = saveReminders(this.reminders);
     this.retryRefused();
