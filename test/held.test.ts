@@ -47,6 +47,16 @@ test('on an MCP-only host, a stored reminder is counted in the log at start, and
   assert.match(trigger.content[0]!.text, new RegExp(`^${escaped(`heartbeat_trigger: no heartbeat was sent, because the host doesn't `
     + `support the push events wakes need. ${ASK} `)}`
     + String.raw`Heartbeat ACTIVE \| mode=message \| interval=14400s \(4\.00h\) \| reminders=2 \| delivery=BLOCKED \(`));
+  // The log keeps the protocol's terms for the dropped heartbeat, in message
+  // mode and in silent mode. Each line comes before the DROPPED line that
+  // follows it on the same stream.
+  const suppressed = `[heartbeat-mcpl] suppressed heartbeat push/event — ${MCP_ONLY}`;
+  await logged(h, 'DROPPED heartbeat (manual)');
+  assert.equal(h.stderr().split('\n').filter((line) => line === suppressed).length, 1, h.stderr());
+  await h.call('heartbeat_configure', { deliveryMode: 'silent' });
+  await h.call('heartbeat_trigger');
+  await logged(h, 'DROPPED heartbeat (manual, silent)');
+  assert.equal(h.stderr().split('\n').filter((line) => line === suppressed).length, 2, h.stderr());
   assert.equal(h.pushes.length, 0);
 });
 
