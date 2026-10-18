@@ -27,6 +27,8 @@ import { sendPush } from './push.js';
 import { formatReminderText } from './reminder-text.js';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
+import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
+import type { Length, ToolSchema } from './arguments.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
 } from './mcpl05.js';
@@ -39,9 +41,17 @@ const CONFIG_PATH = process.env.HEARTBEAT_CONFIG_FILE ?? './heartbeat-config.jso
 const REMINDERS_PATH = process.env.HEARTBEAT_REMINDERS_FILE ?? './heartbeat-reminders.json';
 const FS_NAME = 'heartbeat';
 const AGENT_TIME_ZONE = resolveAgentTimeZone();
-// Floor on any reminder delay/interval — keeps a runaway "every 0s" from
-// spamming the agent, while still allowing brisk test cadences.
+// Floor on a repeating reminder's interval — keeps a runaway "every 0s" from
+// spamming the agent, while still allowing brisk test cadences. A one-off
+// can't repeat, so its delay has none.
 const MIN_REMINDER_SECONDS = 5;
+// Floor on the ambient heartbeat's interval.
+const MIN_HEARTBEAT_SECONDS = 60;
+
+// Each length's units, which add up: [argument, seconds per unit].
+const INTERVAL_UNITS = [['intervalSeconds', 1], ['intervalMinutes', 60], ['intervalHours', 3600]] as const;
+const DELAY_UNITS = [['inSeconds', 1], ['inMinutes', 60], ['inHours', 3600]] as const;
+const EVERY_UNITS = [['everySeconds', 1], ['everyMinutes', 60], ['everyHours', 3600]] as const;
 
 type HeartbeatDeliveryMode = 'message' | 'silent';
 interface HeartbeatConfig { intervalSeconds: number; paused: boolean; message: string; deliveryMode: HeartbeatDeliveryMode; }
@@ -64,27 +74,6 @@ interface Reminder {
   everySeconds: number | null; // recurrence interval; null = one-shot
 }
 
-/** A reminder's delay or interval: the field it was read from, the value given
- *  there, and its length in seconds. */
-interface Span { field: string; value: number; seconds: number; }
-
-/** Read a delay (inHours|inMinutes|inSeconds) or an interval
- *  (everyHours|everyMinutes|everySeconds), in seconds floored at
- *  MIN_REMINDER_SECONDS. When several units are given, the smallest unit wins
- *  (seconds over minutes over hours, whatever their values), as before.
- *  Returns null when that one isn't a positive number. A length past what a
- *  number can hold reads as Infinity, for reminder_add to refuse by name. */
-function readSpan(args: Record<string, unknown>, prefix: 'in' | 'every'): Span | null {
-  let span: Span | null = null;
-  for (const [unit, seconds] of [['Hours', 3600], ['Minutes', 60], ['Seconds', 1]] as const) {
-    const field = `${prefix}${unit}`;
-    const value = args[field];
-    if (typeof value === 'number') span = { field, value, seconds: value * seconds };
-  }
-  if (span === null || !(span.seconds > 0)) return null;
-  return { ...span, seconds: Math.max(MIN_REMINDER_SECONDS, Math.round(span.seconds)) };
-}
-
 function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
 /** The silent-mode fallback is explained once per process, not on every tick. */
 let silentFallbackExplained = false;
@@ -93,17 +82,18 @@ function loadConfig(): HeartbeatConfig {
     if (existsSync(CONFIG_PATH)) {
       const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
       if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
-      // A stored interval means what heartbeat_configure would have made of it.
-      // It saves an infinite interval as null, so null means "never": it
-      // loads paused, at the default for when it's resumed. Under 60 s is
-      // raised to 60 (Math.max(60, …)). Anything else that isn't a finite
-      // number falls back to the default, since its owner wanted some
-      // interval, and a pause would stop the wake that lets the agent notice.
-      // Before, null, zero or a negative number fired the heartbeat about
-      // every millisecond.
+      // A stored interval means what heartbeat_configure made of it when it
+      // was saved. Earlier versions saved an infinite interval as null, so
+      // null means "never": it loads paused, at the default for when it's
+      // resumed. They raised one under 60 s to 60 (Math.max(60, …)), so that
+      // is how it loads; heartbeat_configure now refuses it instead. Anything
+      // else that isn't a finite number falls back to the default, since its
+      // owner wanted some interval, and a pause would stop the wake that lets
+      // the agent notice. Before, null, zero or a negative number fired the
+      // heartbeat about every millisecond.
       const stored: unknown = merged.intervalSeconds;
       if (stored === null) {
-        log(`config intervalSeconds is null, as heartbeat_configure saves an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+        log(`config intervalSeconds is null, as earlier versions of heartbeat_configure saved an infinite interval; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
         merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
         merged.paused = true;
       } else if (typeof stored !== 'number' || !Number.isFinite(stored)) {
@@ -112,6 +102,13 @@ function loadConfig(): HeartbeatConfig {
       } else if (stored < 60) {
         log(`config intervalSeconds ${stored} is under the 60-second floor; using 60s`);
         merged.intervalSeconds = 60;
+      } else if (!canHoldTime(Date.now() + stored * 1000)) {
+        // Earlier versions saved an interval as given, however long. One whose
+        // next heartbeat falls past the last time a Date holds meant "never",
+        // as null does, and would otherwise be armed at Infinity.
+        log(`config intervalSeconds ${stored} puts the next heartbeat past ${LAST_REMINDER_TIME}; loading paused, at the default ${DEFAULT_CONFIG.intervalSeconds}s for when it's resumed`);
+        merged.intervalSeconds = DEFAULT_CONFIG.intervalSeconds;
+        merged.paused = true;
       }
       return merged;
     }
@@ -154,10 +151,11 @@ function loadReminders(): Reminder[] {
             + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`);
           return false;
         });
-        // A stored interval means what reminder_add would have made of it: 0
-        // or less is no interval, so the reminder is a one-off, and under
-        // MIN_REMINDER_SECONDS is raised to it. Before, 0 or less fired again
-        // at once on every advance, about every millisecond.
+        // A stored interval means what reminder_add made of it when it was
+        // saved. Earlier versions read 0 or less as no interval and raised one
+        // under MIN_REMINDER_SECONDS to it, so a stored one loads as a one-off
+        // or as the floor; reminder_add now refuses both. Before, 0 or less
+        // fired again at once on every advance, about every millisecond.
         return holdable.map((r) => {
           if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
           if (r.everySeconds <= 0) {
@@ -197,40 +195,57 @@ const declaredFeatureSets: FeatureSetMap = { [FS_NAME]: featureSetDecl };
 // an ecosystem migration (it also feeds the §17.2 digest), not a one-server edit.
 const featureSets: FeatureSetWireEntry[] = [{ name: FS_NAME, ...featureSetDecl }];
 
-const toolDefinitions = [
+/** A tool as tools/list sends it. Its inputSchema is also what dispatch checks
+ *  each call's arguments against (see checkArguments). */
+interface ToolDefinition extends ToolSchema {
+  description: string;
+  inputSchema: ToolSchema['inputSchema'] & { type: 'object' };
+}
+
+const toolDefinitions: ToolDefinition[] = [
   { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to next wake, message) and how many reminders are pending.',
-    inputSchema: { type: 'object' as const, properties: {} } },
+    inputSchema: { type: 'object', properties: {} } },
   { name: 'heartbeat_configure',
-    description: 'Change your own ambient heartbeat schedule. Provide any of: intervalSeconds | intervalMinutes | intervalHours, paused, deliveryMode, message. Persists across restarts. (Reminders are separate — see reminder_add.)',
-    inputSchema: { type: 'object' as const, properties: {
-      intervalSeconds: { type: 'number', description: 'Wake interval in seconds (min 60).' },
-      intervalMinutes: { type: 'number', description: 'Wake interval in minutes (alternative).' },
-      intervalHours: { type: 'number', description: 'Wake interval in hours (alternative).' },
+    description: 'Change your own ambient heartbeat schedule. Give any of: the interval, in intervalSeconds, intervalMinutes and intervalHours, which add up, 60 seconds or more; paused; deliveryMode; message. Persists across restarts. With no arguments it changes nothing and shows the schedule. (Reminders are separate — see reminder_add.)',
+    inputSchema: { type: 'object', properties: {
+      intervalSeconds: { type: 'number', description: 'Wake interval in seconds. Adds to intervalMinutes and intervalHours; together, 60 seconds or more.' },
+      intervalMinutes: { type: 'number', description: 'Wake interval in minutes. Adds to intervalSeconds and intervalHours.' },
+      intervalHours: { type: 'number', description: 'Wake interval in hours. Adds to intervalSeconds and intervalMinutes.' },
       paused: { type: 'boolean', description: 'Pause (true) or resume (false) heartbeats.' },
       deliveryMode: { type: 'string', enum: ['message', 'silent'], description: 'message = durable prompt; silent = ephemeral private tick with no durable message or automatic prose.' },
       message: { type: 'string', description: 'The text delivered to you in message mode.' },
     } } },
   { name: 'heartbeat_trigger', description: 'Fire an ambient heartbeat immediately (does not change the schedule).',
-    inputSchema: { type: 'object' as const, properties: {} } },
+    inputSchema: { type: 'object', properties: {} } },
   { name: 'reminder_add',
-    description: 'Schedule a reminder that wakes you with a specific message. One-shot: give a delay (inSeconds | inMinutes | inHours) OR an absolute time (atIso, an ISO-8601 timestamp). Recurring: give an interval (everySeconds | everyMinutes | everyHours) — the first fire is one interval out unless you also give a delay. Survives restarts. Returns the reminder id.',
-    inputSchema: { type: 'object' as const, properties: {
+    description: 'Schedule a reminder that wakes you with a specific message. One-off: give a delay, in inSeconds, inMinutes and inHours, which add up, or an absolute time, atIso. Repeating: give an interval, in everySeconds, everyMinutes and everyHours, which add up, 5 seconds or more. A repeating reminder first fires one interval out, or at the delay or atIso you also give. Survives restarts. Returns the reminder id.',
+    inputSchema: { type: 'object', properties: {
       message: { type: 'string', description: 'The text delivered to you when the reminder fires. It arrives after a header naming the reminder, when it was set (or its interval) and the current time, e.g. `[reminder <id>, set <time> · current time: <time>] <message>`.' },
-      inSeconds: { type: 'number', description: 'One-shot: fire this many seconds from now.' },
-      inMinutes: { type: 'number', description: 'One-shot: fire this many minutes from now.' },
-      inHours: { type: 'number', description: 'One-shot: fire this many hours from now.' },
-      atIso: { type: 'string', description: `One-shot ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). A past time fires as soon as a wake can be delivered.` },
-      everySeconds: { type: 'number', description: 'Recurring: repeat every N seconds (min 5).' },
-      everyMinutes: { type: 'number', description: 'Recurring: repeat every N minutes.' },
-      everyHours: { type: 'number', description: 'Recurring: repeat every N hours.' },
+      inSeconds: { type: 'number', description: 'Fire this many seconds from now. Adds to inMinutes and inHours.' },
+      inMinutes: { type: 'number', description: 'Fire this many minutes from now. Adds to inSeconds and inHours.' },
+      inHours: { type: 'number', description: 'Fire this many hours from now. Adds to inSeconds and inMinutes.' },
+      atIso: { type: 'string', description: `When it fires, or first fires if it repeats: an ISO-8601 date/time. Without an offset, read in AGENT_TIMEZONE (${AGENT_TIME_ZONE}), and a date alone (YYYY-MM-DD) is midnight there; nonexistent or repeated wall times are refused so no DST choice is made for you. For a repeated time, supply one of the offsets named in the error. Z or a numeric offset specifies the instant directly (e.g. 2026-07-01T09:00:00-04:00). A past time fires as soon as a wake can be delivered.` },
+      everySeconds: { type: 'number', description: 'Repeat every N seconds. Adds to everyMinutes and everyHours; together, 5 seconds or more.' },
+      everyMinutes: { type: 'number', description: 'Repeat every N minutes. Adds to everySeconds and everyHours.' },
+      everyHours: { type: 'number', description: 'Repeat every N hours. Adds to everySeconds and everyMinutes.' },
     }, required: ['message'] } },
   { name: 'reminder_list', description: 'List your pending reminders (id, next fire time, recurrence, message).',
-    inputSchema: { type: 'object' as const, properties: {} } },
+    inputSchema: { type: 'object', properties: {} } },
   { name: 'reminder_cancel', description: 'Cancel a reminder by its id (from reminder_add / reminder_list).',
-    inputSchema: { type: 'object' as const, properties: {
-      id: { type: 'string', description: 'The reminder id to cancel.' },
+    inputSchema: { type: 'object', properties: {
+      id: { type: 'string', description: 'The id of the reminder to cancel, as reminder_add returned it and reminder_list shows it; it starts with rem_.' },
     }, required: ['id'] } },
 ];
+
+/** What a refused call of each tool leaves undone, to open its refusal. */
+const REFUSED: Record<string, string> = {
+  heartbeat_status: 'nothing was shown',
+  heartbeat_configure: 'nothing was changed',
+  heartbeat_trigger: 'no heartbeat was sent',
+  reminder_add: 'no reminder was set',
+  reminder_list: 'nothing was listed',
+  reminder_cancel: 'nothing was cancelled',
+};
 
 interface ReqMsg { id: JsonRpcId; method: string; params?: unknown; }
 interface NotifMsg { method: string; params?: unknown; }
@@ -323,7 +338,7 @@ class HeartbeatServer {
     try {
       switch (req.method) {
         case 'tools/list': conn.sendResponse(req.id, { tools: toolDefinitions }); break;
-        case 'tools/call': conn.sendResponse(req.id, this.handleToolCall(params.name as string, (params.arguments ?? {}) as Record<string, unknown>)); break;
+        case 'tools/call': conn.sendResponse(req.id, this.handleToolCall(params.name as string, params.arguments ?? {})); break;
         case method.FEATURE_SETS_UPDATE: this.handleFeatureSetsUpdateRequest(req); break;
         // §6.6: a method that will never be answered MUST return an error, so
         // everything else — channels/* included, since no channel capability is
@@ -474,35 +489,69 @@ class HeartbeatServer {
       ` | message="${c.message}"`;
   }
 
-  private handleToolCall(name: string, args: Record<string, unknown>) {
+  /** Every argument a call sends is applied, or the call is refused, applies
+   *  nothing, and names each problem at once: the schema's (checkArguments)
+   *  and the tool's own. A key that no tool here takes, and that is a slip for
+   *  none of their arguments, does nothing either way: an applied call's
+   *  result names it as ignored, and a refused call's names it too. */
+  private handleToolCall(name: string, rawArgs: unknown) {
+    const tool = toolDefinitions.find((t) => t.name === name);
+    if (!tool) return this.text(`Unknown tool: ${name}`, true);
+    const { problems, ignored } = checkArguments(tool, rawArgs, toolDefinitions);
+    // Arguments that aren't an object are a problem named above; read them as none.
+    const args = (typeof rawArgs === 'object' && rawArgs !== null && !Array.isArray(rawArgs) ? rawArgs : {}) as Record<string, unknown>;
+    const result = this.callTool(name, args, problems);
+    if (ignored.length > 0) result.content[0].text += ` ${ignoredNote(tool, ignored, result.isError === true)}`;
+    return result;
+  }
+
+  /** Run a known tool, which adds its own problems to `problems` and is
+   *  refused if there are any. */
+  private callTool(name: string, args: Record<string, unknown>, problems: string[]) {
     switch (name) {
-      case 'heartbeat_status':
-        return this.text(this.statusText());
-      case 'heartbeat_configure': {
-        let changed = false;
-        if (typeof args.intervalHours === 'number') { this.config.intervalSeconds = Math.max(60, Math.round(args.intervalHours * 3600)); changed = true; }
-        if (typeof args.intervalMinutes === 'number') { this.config.intervalSeconds = Math.max(60, Math.round(args.intervalMinutes * 60)); changed = true; }
-        if (typeof args.intervalSeconds === 'number') { this.config.intervalSeconds = Math.max(60, Math.round(args.intervalSeconds)); changed = true; }
-        if (typeof args.paused === 'boolean') { this.config.paused = args.paused; changed = true; }
-        if (args.deliveryMode === 'message' || args.deliveryMode === 'silent') { this.config.deliveryMode = args.deliveryMode; changed = true; }
-        if (typeof args.message === 'string' && args.message.trim()) { this.config.message = args.message; changed = true; }
-        if (changed) { saveConfig(this.config); this.reschedule(); }
-        return this.text((changed ? 'Updated. ' : 'No changes. ') + this.statusText());
-      }
+      case 'heartbeat_configure': return this.configure(args, problems);
+      case 'reminder_add': return this.addReminder(args, problems);
+      case 'reminder_cancel': return this.cancelReminder(args, problems);
+    }
+    if (problems.length > 0) return this.refuse(name, problems);
+    switch (name) {
       case 'heartbeat_trigger': {
         const blocked = this.pushBlockedReason();
         this.fire('manual');
         return this.text((blocked ? `Heartbeat NOT delivered — ${blocked}. ` : 'Heartbeat fired. ') + this.statusText());
       }
-      case 'reminder_add':
-        return this.addReminder(args);
       case 'reminder_list':
         return this.text(this.listRemindersText());
-      case 'reminder_cancel':
-        return this.cancelReminder(args);
-      default:
-        return this.text(`Unknown tool: ${name}`, true);
+      default: // heartbeat_status
+        return this.text(this.statusText());
     }
+  }
+
+  private refuse(tool: string, problems: readonly string[]) {
+    return this.text(`${tool}: ${REFUSED[tool]}. ${problems.join(' ')}`, true);
+  }
+
+  private configure(args: Record<string, unknown>, problems: string[]) {
+    const interval = addUnits(args, INTERVAL_UNITS, problems);
+    if (interval && !canHoldTime(Date.now() + interval.seconds * 1000)) {
+      problems.push(`${givenText(interval, ['puts', 'put'])} the next heartbeat past ${LAST_REMINDER_TIME}, the last time it can be set for; `
+        + 'give a shorter interval, or leave the interval out and pause the heartbeat with "paused": true.');
+    } else if (interval && interval.seconds < MIN_HEARTBEAT_SECONDS) {
+      problems.push(`${givenText(interval)} ${interval.seconds} s, under the heartbeat's ${MIN_HEARTBEAT_SECONDS}-second floor; `
+        + `give ${MIN_HEARTBEAT_SECONDS} seconds or more, or leave the interval out and pause the heartbeat with "paused": true.`);
+    }
+    if (typeof args.message === 'string' && !args.message.trim()) {
+      problems.push('"message" is blank; give the text each heartbeat should bring, or leave it out to keep the one it has.');
+    }
+    if (problems.length > 0) return this.refuse('heartbeat_configure', problems);
+    const c = this.config;
+    let changed = false;
+    if (interval) { c.intervalSeconds = interval.seconds; changed = true; }
+    if (typeof args.paused === 'boolean') { c.paused = args.paused; changed = true; }
+    if (args.deliveryMode === 'message' || args.deliveryMode === 'silent') { c.deliveryMode = args.deliveryMode; changed = true; }
+    if (typeof args.message === 'string') { c.message = args.message; changed = true; }
+    if (changed) { saveConfig(c); this.reschedule(); }
+    return this.text((changed ? 'Updated. ' : 'No changes. ') + this.statusText());
   }
 
   // ── Ambient heartbeat ──
@@ -604,64 +653,67 @@ class HeartbeatServer {
 
   // ── Reminders ──
 
-  private addReminder(args: Record<string, unknown>) {
-    const message = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : null;
-    if (!message) return this.text('reminder_add requires a non-empty "message".', true);
-
-    const now = Date.now();
-    const every = readSpan(args, 'every');
-    const delay = readSpan(args, 'in');
-    let fireAt: number | null = null;
-
-    if (every !== null) {
-      // Recurring: first fire is `delay` out if given, else one interval out.
-      fireAt = now + (delay ?? every).seconds * 1000;
-    } else if (delay !== null) {
-      fireAt = now + delay.seconds * 1000;
-    } else if (typeof args.atIso === 'string') {
+  private addReminder(args: Record<string, unknown>, problems: string[]) {
+    const message = typeof args.message === 'string' ? args.message.trim() : '';
+    if (typeof args.message === 'string' && !message) problems.push('"message" is blank; give the text to deliver when it fires.');
+    const delay = addUnits(args, DELAY_UNITS, problems);
+    const every = addUnits(args, EVERY_UNITS, problems);
+    // The times the call sent, whatever their values: a delay or atIso it sent
+    // sets the first fire even when it can't be read.
+    const delayNames = DELAY_UNITS.map(([name]) => name).filter((name) => Object.hasOwn(args, name));
+    const atGiven = Object.hasOwn(args, 'atIso');
+    if (every && every.seconds < MIN_REMINDER_SECONDS) {
+      problems.push(`${givenText(every)} ${every.seconds} s, under the ${MIN_REMINDER_SECONDS}-second floor for a repeating reminder; `
+        + `give ${MIN_REMINDER_SECONDS} seconds or more, or leave the interval out and give a delay or atIso for a one-off.`);
+    }
+    if (atGiven && delayNames.length > 0) problems.push(`"atIso" and ${andList(delayNames)} both set when it first fires; give one of them.`);
+    const timeGiven = delayNames.length > 0 || atGiven || EVERY_UNITS.some(([name]) => Object.hasOwn(args, name));
+    if (!timeGiven) {
+      problems.push('No time was given: give a delay in inSeconds, inMinutes or inHours, a time in atIso, '
+        + 'or an interval to repeat in everySeconds, everyMinutes or everyHours.');
+    }
+    let at: number | null = null;
+    if (typeof args.atIso === 'string') {
       try {
-        fireAt = parseReminderTime(args.atIso, AGENT_TIME_ZONE);
+        at = parseReminderTime(args.atIso, AGENT_TIME_ZONE);
       } catch (error) {
-        return this.text(`reminder_add: ${(error as Error).message}`, true);
+        problems.push((error as Error).message);
       }
       // A past time is allowed: it fires on the next tick a wake can be delivered.
     }
 
-    if (fireAt === null) {
-      return this.text(
-        'reminder_add: specify WHEN — a one-shot delay (inSeconds/inMinutes/inHours) or absolute time (atIso), ' +
-        'or a recurring interval (everySeconds/everyMinutes/everyHours).', true,
-      );
-    }
-
+    // The first fire: at the delay or atIso the call sent, else one interval
+    // out. One it sent that can't be read leaves the first fire unknown, so the
+    // interval isn't checked against a first fire the call didn't ask for.
+    const now = Date.now();
+    const first = delayNames.length > 0 ? (delay ? now + delay.seconds * 1000 : null)
+      : atGiven ? at
+      : every ? now + every.seconds * 1000 : null;
     // A delay or interval can reach past the last time a Date holds (atIso's
-    // parser refuses its own). Refuse it here, before anything is saved: a
-    // time past it can never fire, and listing it throws.
-    const pastTheLastTime = (span: Span, which: string, remedy: string) => this.text(
-      `reminder_add: no reminder was set. "${span.field}" ${span.value} puts ${which} past ${LAST_REMINDER_TIME}, `
-      + `the last time a reminder can hold. ${remedy}`, true,
-    );
-    if (every === null && delay !== null && !canHoldTime(fireAt)) {
-      return pastTheLastTime(delay, 'it', 'Give a shorter delay, or an atIso before then.');
+    // parser refuses its own). Refuse it before anything is saved: a time past
+    // it can never fire, and listing it throws.
+    const pastTheLastTime = (length: Length, which: string, remedy: string) =>
+      `${givenText(length, ['puts', 'put'])} ${which} past ${LAST_REMINDER_TIME}, the last time a reminder can hold. ${remedy}`;
+    if (first !== null && !canHoldTime(first)) {
+      problems.push(delay
+        ? pastTheLastTime(delay, every ? 'its first fire' : 'it', 'Give a shorter delay, or an atIso before then.')
+        : pastTheLastTime(every!, 'its first fire', 'Give a shorter interval.'));
+    } else if (first !== null && every && !canHoldTime(first + every.seconds * 1000)) {
+      problems.push(pastTheLastTime(every, 'its second fire', 'Give a shorter interval.'));
     }
-    if (every !== null && !canHoldTime(fireAt)) {
-      return pastTheLastTime(delay ?? every, 'its first fire', delay ? 'Give a shorter delay.' : 'Give a shorter interval.');
-    }
-    if (every !== null && !canHoldTime(fireAt + every.seconds * 1000)) {
-      return pastTheLastTime(every, 'its second fire', 'Give a shorter interval.');
-    }
+    if (problems.length > 0 || first === null) return this.refuse('reminder_add', problems);
 
     const rem: Reminder = {
       id: `rem_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       message,
       createdAt: now,
-      fireAt,
+      fireAt: first,
       everySeconds: every?.seconds ?? null,
     };
     this.reminders.push(rem);
     saveReminders(this.reminders);
     this.retryRefused();
-    log(`added reminder ${rem.id} fireAt=${new Date(fireAt).toISOString()} every=${rem.everySeconds ?? 'once'}`);
+    log(`added reminder ${rem.id} fireAt=${new Date(first).toISOString()} every=${rem.everySeconds ?? 'once'}`);
     // A fire time the reminder won't keep would be a false success.
     const blocked = this.pushBlockedReason();
     return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
@@ -706,9 +758,10 @@ class HeartbeatServer {
     return `${this.reminders.length} reminder(s):\n${lines.join('\n')}${waiting}${refused}`;
   }
 
-  private cancelReminder(args: Record<string, unknown>) {
-    const id = typeof args.id === 'string' ? args.id : null;
-    if (!id) return this.text('reminder_cancel requires an "id".', true);
+  private cancelReminder(args: Record<string, unknown>, problems: string[]) {
+    const id = typeof args.id === 'string' ? args.id : '';
+    if (typeof args.id === 'string' && !id.trim()) problems.push('"id" is blank; give the reminder\'s id, as reminder_list shows it.');
+    if (problems.length > 0) return this.refuse('reminder_cancel', problems);
     const before = this.reminders.length;
     this.reminders = this.reminders.filter((r) => r.id !== id);
     if (this.reminders.length === before) return this.text(`No reminder with id ${id}.`);

@@ -71,9 +71,9 @@ test('a 720-hour interval waits for its time, and the status counts down to it',
 });
 
 test('a stored heartbeat interval is read as heartbeat_configure would have taken it', async (t) => {
-  // heartbeat_configure {intervalHours: 1e306} saves the interval as null,
-  // with paused false; null read as 0. A hand edit can store 0, which fired as
-  // often, or text.
+  // Earlier versions of heartbeat_configure saved {intervalHours: 1e306} as
+  // null, with paused false; null read as 0. A hand edit can store 0, which
+  // fired as often, or text.
   const { session, heartbeats, status, restartWith } = await start(t, { config: { intervalSeconds: null, paused: false } });
   /** The interval heartbeat_status shows, and that the next heartbeat is armed within it. */
   const armed = async () => {
@@ -99,6 +99,12 @@ test('a stored heartbeat interval is read as heartbeat_configure would have take
   assert.equal(await armed(), 60, 'a stored 0 is raised to the 60 s floor');
   await restartWith({ intervalSeconds: 90 });
   assert.equal(await armed(), 90, 'a stored 90 is kept');
+  // Saved as given by earlier versions; its next heartbeat would fall past the last time a Date holds.
+  await restartWith({ intervalSeconds: 1e306, paused: false });
+  assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'an interval too long to schedule, saved for "never", loads paused');
+  // Finite in milliseconds too, and still past the last time a Date holds once added to now.
+  await restartWith({ intervalSeconds: 9e12, paused: false });
+  assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'and so does a finite one');
 });
 
 const reminderRow = (id, fireAt, everySeconds) => ({ id, message: id, createdAt: Date.now(), fireAt, everySeconds });
@@ -106,9 +112,9 @@ const listed = async (session) => (await session.callTool('reminder_list', {})).
 const lineOf = (list, id) => list.split('\n').find((l) => l.startsWith(`${id} |`)) ?? '';
 
 test('a stored reminder interval is read as reminder_add would have taken it', async (t) => {
-  // reminder_add raises an interval under 5 s to 5 s and reads 0 or less as
-  // none; only a hand edit stores one. Each falls due an hour on, so each is
-  // listed as it was loaded.
+  // Earlier versions of reminder_add raised an interval under 5 s to 5 s and
+  // read 0 or less as none, so only a hand edit stores one; a fraction is kept
+  // as given. Each falls due an hour on, so each is listed as it was loaded.
   const hourOn = Date.now() + 3_600_000;
   const { session } = await start(t, {
     reminders: [
@@ -117,6 +123,7 @@ test('a stored reminder interval is read as reminder_add would have taken it', a
       reminderRow('rem_three', hourOn, 3),
       reminderRow('rem_once', hourOn, null),
       reminderRow('rem_hourly', hourOn, 3600),
+      reminderRow('rem_fraction', hourOn, 7.5),
     ],
   });
   const list = await listed(session);
@@ -125,6 +132,7 @@ test('a stored reminder interval is read as reminder_add would have taken it', a
   assert.match(lineOf(list, 'rem_three'), /\| repeats every 5s \|/);
   assert.match(lineOf(list, 'rem_once'), /\| one-shot \|/);
   assert.match(lineOf(list, 'rem_hourly'), /\| repeats every 3600s \|/);
+  assert.match(lineOf(list, 'rem_fraction'), /\| repeats every 7\.5s \|/);
 });
 
 test('a stored reminder interval of 0 fires once when it falls due, then is gone', async (t) => {

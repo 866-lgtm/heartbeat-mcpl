@@ -8,17 +8,35 @@ On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 itself configures its own schedule via three MCP tools:
 
 - `heartbeat_status` — show current interval, paused state, time-to-next, message
-- `heartbeat_configure` — set `intervalSeconds | intervalMinutes | intervalHours`, `paused`, `deliveryMode`, `message`; persists across restarts
+- `heartbeat_configure` — set the interval (`intervalSeconds`, `intervalMinutes` and `intervalHours`, which add up, 60 seconds or more), `paused`, `deliveryMode`, `message`; persists across restarts
   - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
   - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose (see [Silent mode](#silent-mode) for what it requires)
 - `heartbeat_trigger` — fire one heartbeat now (test/debug)
 
 Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.
 
+Every argument a tool call sends is applied, or the call is refused, changes
+nothing and names each problem at once: a value of the wrong type or out of
+range, two arguments that contradict each other, or a name the tool doesn't
+take that is a slip for one it does, or for one another of these tools takes.
+A slip is the same name ignoring case, a few edits away, a part of it of three
+letters or more, such as `mode` for `deliveryMode`, or, for a name of three
+letters or more, a longer name that holds it, sent without it, such as
+`heartbeatIntervalMinutes` for `intervalMinutes`. Each name is weighed on its
+own: `pausedReason` sent beside `paused` is no slip for it, while
+`pausedMessage` sent beside it is a slip for `message`. Any other name a tool
+doesn't take is ignored, and the result says so and what the tool takes,
+unless the call sends nothing else to a tool that takes arguments, which then
+refuses it. Lengths are kept to the millisecond.
+
 ## Reminders
 
 `reminder_add`, `reminder_list` and `reminder_cancel` manage one-shot and
-recurring reminders, persisted to
+recurring reminders. A delay (`inSeconds`, `inMinutes`, `inHours`) or an
+interval (`everySeconds`, `everyMinutes`, `everyHours`) adds up its units. A
+recurring reminder's interval is 5 seconds or more, and it first fires one
+interval out, or at the delay or `atIso` given with it. Reminders are
+persisted to
 `${HEARTBEAT_REMINDERS_FILE:-./heartbeat-reminders.json}`. A due reminder is a
 `push/event` with `origin.source: "reminder"` and `origin.reminderId`. Its text
 starts with a header saying it is a reminder, which reminder, and the current
