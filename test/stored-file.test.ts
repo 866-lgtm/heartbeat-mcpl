@@ -3,6 +3,7 @@
 // but isn't what the server writes is copied aside, named by its content,
 // before anything saves over it.
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { readStored } from '../src/stored-file.js';
 
 const copyOf = (path: string, text: string) => `${path}.unreadable-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
 
-function fresh(t: test.TestContext): string {
+function fresh(t: TestContext): string {
   const dir = mkdtempSync(join(tmpdir(), 'hb-stored-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return join(dir, 'reminders.json');
