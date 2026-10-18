@@ -31,17 +31,17 @@ export async function logged(h: { stderr: () => string }, line: string) {
  *  as `answerPush` says, at once, or when the promise it returns settles. With
  *  `mcpl` false it initializes as an MCP-only host, which sends no policy;
  *  with `policy` false it sends none either, as a pre-0.5 host's Request never
- *  comes. */
+ *  comes. `env` is added to the server's environment. */
 export async function serverWithHost(
   answerPush: (p: PushEventParams) => PushAnswer | Promise<PushAnswer>,
-  { reminders = [] as unknown[], mcpl = true, policy = true } = {},
+  { reminders = [] as unknown[], mcpl = true, policy = true, env = {} as Record<string, string> } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'hb-scripted-host-'));
   const remindersFile = join(dir, 'reminders.json');
   writeFileSync(remindersFile, JSON.stringify(reminders));
   const child = spawn(process.execPath, ['--import', 'tsx', join(ROOT, 'src', 'index.ts'), '--stdio'], {
     cwd: ROOT,
-    env: { ...process.env, HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'), HEARTBEAT_REMINDERS_FILE: remindersFile },
+    env: { ...process.env, ...env, HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'), HEARTBEAT_REMINDERS_FILE: remindersFile },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '';
