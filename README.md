@@ -8,7 +8,7 @@ On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 itself configures its own schedule via three MCP tools:
 
 - `heartbeat_status` — show current interval, paused state, time to the next wake while one is coming, message, and whether wakes can be delivered
-- `heartbeat_configure` — set the interval (`intervalSeconds`, `intervalMinutes` and `intervalHours`, which add up, 60 seconds or more), `paused`, `deliveryMode`, `message`; persists across restarts
+- `heartbeat_configure` — set the interval (`intervalSeconds`, `intervalMinutes` and `intervalHours`, which add up, 60 seconds or more), `paused`, `deliveryMode`, `message`; the schedule is saved so that it persists across restarts, and the reply says if a change can't be or wasn't saved
   - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
   - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose (see [Silent mode](#silent-mode) for what it requires)
 - `heartbeat_trigger` — fire one heartbeat now (test/debug)
@@ -18,11 +18,14 @@ Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.
 No save loses this file or the reminders file when the server can't use it.
 One that can't be read at all is left as it is, and nothing is saved over
 it until a restart reads it again: the server runs on what it holds in
-memory meanwhile, and a call that changes what it holds is told the change
-won't last past a restart. One that reads but isn't what the server writes,
-such as a file a crash tore during a save, is copied aside first, to
-`<file>.unreadable-<hash>`, and the server starts without it. The log names
-the copy.
+memory meanwhile. One that reads but isn't what the server writes, such as
+a file a crash tore during a save, is copied aside first, to
+`<file>.unreadable-<hash>`, and the server starts without it. A reminders
+file with a row the server can't load is copied aside the same way, and the
+server starts with the rest. The log names the copy. While a file couldn't
+be used, each reply that shows or counts what its store holds says so, and
+a call whose change isn't saved, because its file can't be used or writing
+it failed, says that too.
 
 Every argument a tool call sends is applied, or the call is refused, changes
 nothing and names each problem at once: a value of the wrong type or out of
