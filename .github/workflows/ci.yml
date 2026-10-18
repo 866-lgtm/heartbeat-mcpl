@@ -45,6 +45,7 @@ jobs:
           git clone --depth 1 https://github.com/anima-research/mcpl-harness.git ../mcpl-harness
           npm install --prefix ../mcpl-harness --omit=dev --no-audit --no-fund
 
-      # npm test builds first (npm run build), so the build runs on each Node.
+      # npm test builds first (npm run build), so the build runs on each Node,
+      # then type-checks the tests (tsc -p test) before running them.
       - name: Test
         run: npm test
