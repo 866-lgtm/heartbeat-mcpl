@@ -205,7 +205,9 @@ test('out-of-range clock fields are refused, with an example that keeps the offs
   }
 });
 
-test('a time offered to copy for a day or a clock time is one atIso accepts, in the zone the refusal names', () => {
+test('for these days and zones, a time offered to copy for a day or a clock time is one atIso accepts, in the zone the refusal names', () => {
+  // Not on every day: on the first or last day a Date holds, or a day the zone
+  // skips whole, the clock refusal's 09:00 can be refused in turn.
   for (const [time, zone] of [
     ['2024-02-30T09:00:00', 'America/New_York'], ['2100-02-29T09:00+01:00', 'UTC'], ['2024-04-31T09:00Z', 'Asia/Kolkata'],
     ['2024-07-15T25:00', 'America/New_York'], ['2024-07-15T24:00:01', 'Europe/Berlin'], ['2024-07-15T09:60:00-04:00', 'UTC'],
@@ -215,6 +217,11 @@ test('a time offered to copy for a day or a clock time is one atIso accepts, in 
     try { parseReminderTime(time, zone); } catch (error) { message = (error as Error).message; }
     const copy = /like ("[^"]+")/.exec(message)?.[1];
     assert.ok(copy, `${time}: ${message}`);
+    // The copy keeps the offset the time was given with, or, given none, the
+    // refusal names the zone that reads it.
+    const offset = /T[\d:.]+(Z|[+-][\d:]+)$/.exec(time)?.[1];
+    if (offset) assert.ok(copy.endsWith(`${offset}"`) && !message.includes(', read in '), message);
+    else assert.ok(message.includes(`${copy}, read in ${zone}`), message);
     assert.doesNotThrow(() => parseReminderTime(JSON.parse(copy), zone), `${time} offers ${copy}`);
   }
 });

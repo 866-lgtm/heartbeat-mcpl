@@ -7,7 +7,7 @@ On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 `origin.source: heartbeat`) to wake the agent for a self-check-in. The agent
 itself configures its own schedule via three MCP tools:
 
-- `heartbeat_status` — show current interval, paused state, time-to-next, message
+- `heartbeat_status` — show current interval, paused state, time to the next wake while one is coming, message, and whether wakes can be delivered
 - `heartbeat_configure` — set the interval (`intervalSeconds`, `intervalMinutes` and `intervalHours`, which add up, 60 seconds or more), `paused`, `deliveryMode`, `message`; persists across restarts
   - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
   - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose (see [Silent mode](#silent-mode) for what it requires)

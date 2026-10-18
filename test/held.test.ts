@@ -11,7 +11,7 @@ const PRE_05 = 'host sent featureSets/update only as a Notification, which canno
   + 'so no wake is delivered on this connection';
 const NOT_READY = 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
   + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
-// What the agent reads: where none ever will fire, for the reminder just set
+// What the agent reads: where none will fire, for the reminder just set
 // (`one`) and in the listing, and where a reminder waits.
 const ASK = "Calling again won't change that; ask whoever runs this host if you need wakes.";
 const never = (why: string) => ({
@@ -86,8 +86,8 @@ test('once wakes are allowed a reply has no held note, and a malformed Request h
 });
 
 test('a Notification after a malformed Request is a 0.5 host\'s update: a reminder waits, and fires once a valid Request comes', async (t) => {
-  // A host that has sent any Request speaks 0.5, so it is never told that no
-  // reminder will fire on it, even after a Notification.
+  // A host that has sent any Request speaks 0.5, so a Notification after it
+  // doesn't make it one that sends its policy only as Notifications.
   const h = await serverWithHost(() => ({}), { policy: false });
   t.after(h.close);
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));

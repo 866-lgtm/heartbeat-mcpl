@@ -29,7 +29,7 @@ import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime
 import { callAt } from './timer.js';
 import { HOST_GONE, heldNote, wakeBlocked } from './wake-blocked.js';
 import type { WakeBlocked } from './wake-blocked.js';
-import { describeThrown, noSuchTool, toolThrew } from './call-texts.js';
+import { describeThrown, noSuchTool, thrownForLog, toolThrew } from './call-texts.js';
 import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
@@ -206,7 +206,7 @@ interface ToolDefinition extends ToolSchema {
 }
 
 const toolDefinitions: ToolDefinition[] = [
-  { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to next wake, message) and how many reminders are pending.',
+  { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to the next wake while one is coming, message), whether wakes can be delivered, and how many reminders are pending.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'heartbeat_configure',
     description: 'Change your own ambient heartbeat schedule. Give any of: the interval, in intervalSeconds, intervalMinutes and intervalHours, which add up, 60 seconds or more; paused; deliveryMode; message. Persists across restarts. With no arguments it changes nothing and shows the schedule. (Reminders are separate — see reminder_add.)',
@@ -349,9 +349,13 @@ class HeartbeatServer {
         default: conn.sendError(req.id, -32601, `Method not found: ${req.method}`);
       }
     } catch (e) {
-      // A tool that threw may have changed something first, so the agent is
-      // told to look before it calls again. Other methods aren't the agent's.
-      conn.sendError(req.id, -32000, req.method === 'tools/call' ? toolThrew(params.name, e) : describeThrown(e));
+      // A tool that threw may have changed something first, unless it only
+      // reads, and the agent is told which. Other methods aren't the agent's.
+      // Whoever runs the host, whom the agent asks if the fault comes back,
+      // finds it in the log with its stack, once the request is answered.
+      const tool = req.method === 'tools/call';
+      conn.sendError(req.id, -32000, tool ? toolThrew(params.name, e) : describeThrown(e));
+      log(`${tool && typeof params.name === 'string' ? params.name : req.method} threw: ${thrownForLog(e)}`);
     }
   }
 
