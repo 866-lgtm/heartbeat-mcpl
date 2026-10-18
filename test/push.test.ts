@@ -57,6 +57,9 @@ function failedWith(error: Error): string {
   return `the push failed: ${why}`;
 }
 
+/** Let what is due without the clock moving run: promise callbacks and I/O. */
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
 test('each answer is told apart: taken, refused with or without a reason, or an error; only accepted: false refuses', async (t) => {
   const cases: Array<[string, { error?: [number, string]; result?: unknown }, string | null]> = [
     ['taken', { result: { accepted: true, inferenceId: 'i' } }, null],
@@ -81,28 +84,34 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
   // sendPush gives can end the wait, whatever mcpl-core's default is.
   c.server.requestTimeout = 0;
   const seen = rejections(c.server);
-  let outcome: PushOutcome | undefined;
-  void sendPush(c.server, params).then((o) => { outcome = o; });
-  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const outcomes: PushOutcome[] = [];
+  void sendPush(c.server, params).then((o) => { outcomes.push(o); });
   await flush();
   t.mock.timers.tick(29_999);
   await flush();
-  assert.equal(outcome, undefined, 'still waiting a millisecond before 30 s');
+  assert.equal(outcomes.length, 0, 'still waiting a millisecond before 30 s');
   t.mock.timers.tick(1);
   await flush();
   assert.equal(seen.length, 1, 'the push failed at 30 s');
+  const [outcome] = outcomes;
   assert.ok(outcome && 'error' in outcome, 'it came back as a failure');
   assert.equal(outcome.error, seen[0]);
   assert.equal(outcome.refusal, failedWith(seen[0]));
 });
 
-test('a push out when the connection closes fails', async () => {
+test('a push out when the connection closes fails', async (t) => {
+  // The clock stands still, so the push's 30 s bound can't end it: only the close can.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = connected(() => undefined);
   const seen = rejections(c.server);
-  const pending = sendPush(c.server, params);
+  const outcomes: PushOutcome[] = [];
+  void sendPush(c.server, params).then((o) => { outcomes.push(o); });
+  await flush();
   c.close();
-  const outcome = await pending;
+  for (let i = 0; i < 10 && outcomes.length === 0; i++) await flush();
+  assert.equal(outcomes.length, 1, 'the push came back at the close, with no time passing');
   assert.equal(seen.length, 1, 'the push failed when the connection closed');
+  const [outcome] = outcomes;
   assert.ok('error' in outcome, 'it came back as a failure');
   assert.equal(outcome.error, seen[0]);
   assert.equal(outcome.refusal, failedWith(seen[0]));
