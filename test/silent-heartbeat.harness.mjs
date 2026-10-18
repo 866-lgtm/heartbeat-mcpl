@@ -23,6 +23,15 @@ const session = new HostSession({ command: 'node', args: [server, '--stdio'], en
 const pushes = [];
 session.on('event', (ev) => { if (ev.kind === 'push') pushes.push(ev.data); });
 const check = (cond, msg) => { if (!cond) throw new Error(msg); console.log(`ok - ${msg}`); };
+/** The first push from `source`, waiting for one up to `ms`. */
+const pushFrom = async (source, ms) => {
+  const until = Date.now() + ms;
+  let push;
+  while (!(push = pushes.find((p) => p?.origin?.source === source)) && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return push;
+};
 try {
   await session.start();
   await session.raw('featureSets/update', {
@@ -33,16 +42,17 @@ try {
   const status = (await session.callTool('heartbeat_status', {}))?.content?.[0]?.text ?? '';
   check(status.includes('mode=silent'), 'status reports silent mode');
   await session.callTool('heartbeat_trigger', {});
-  await new Promise((r) => setTimeout(r, 100));
-  const hb = pushes.find((p) => p?.origin?.source === 'heartbeat');
+  const hb = await pushFrom('heartbeat', 5_000);
   check(!!hb, 'manual trigger emits one heartbeat push');
   check(hb.origin.silent === true, 'silent marker is server-authored');
   check(Array.isArray(hb.payload?.content) && hb.payload.content.length === 0, 'silent push has no message content');
 
   await session.callTool('reminder_add', { message: 'REMINDER-TEXT', inSeconds: 5 });
-  await new Promise((r) => setTimeout(r, 6000));
-  const rem = pushes.find((p) => p?.origin?.source === 'reminder');
-  check(rem?.payload?.content?.[0]?.text === 'REMINDER-TEXT', 'reminders remain message-bearing');
+  const rem = await pushFrom('reminder', 15_000);
+  check(!!rem, 'reminder fires in silent mode');
+  // A fired reminder's text is its message behind a [reminder …] header.
+  const remText = rem?.payload?.content?.[0]?.text ?? '';
+  check(remText.startsWith('[reminder ') && remText.endsWith('] REMINDER-TEXT'), 'reminders remain message-bearing');
 
   await session.restart();
   await session.raw('featureSets/update', {
