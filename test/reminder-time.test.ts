@@ -296,11 +296,12 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
   // range: each dropped at load. And a recurring reminder whose next time is
   // past the last one, which ends once the host takes its push.
   const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
-  const last = row('rem_last', now + 1000, 1e13);
+  const lastAt = now + 1000;
+  const last = row('rem_last', lastAt, 1e13);
   const h = await serverWithHost(() => ({}), { reminders: [...dropped, last] });
   try {
     await h.pushCount(1);
-    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${last.fireAt + 1e13 * 1000}, `
+    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${lastAt + 1e13 * 1000}, `
       + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
     // The end is logged once the server has read the host's answer, a little after the push.
     for (const deadline = Date.now() + 5_000; !h.stderr().split('\n').includes(ended) && Date.now() < deadline;) {
