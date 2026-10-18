@@ -11,10 +11,18 @@ export function canHoldTime(ms: number): boolean {
   return Math.abs(ms) <= MAX_DATE_MS;
 }
 
-/** What atIso accepts, for its refusals. */
-const accepted = (timeZone: string) => 'Use a calendar date YYYY-MM-DD (or an expanded year, ±YYYYYY-MM-DD),'
-  + ' optionally with a time THH:MM, THH:MM:SS or THH:MM:SS.fff, which can end in Z or a UTC offset ±hh, ±hh:mm or ±hhmm.'
-  + ` Without one, the time is read in ${timeZone}, and a date alone is midnight there.`;
+/** Whether the calendar has this day, whatever a Date can hold. */
+function isCalendarDay(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+/** Whether a clock shows this time: 00:00 to 23:59:59, or ISO's 24:00 for the end of the day. */
+function isClockTime(hour: number, minute: number, second: number, fraction: number): boolean {
+  if (hour === 24) return minute === 0 && second === 0 && fraction === 0;
+  return hour <= 23 && minute <= 59 && second <= 59;
+}
 
 /** A UTC offset in milliseconds, or null if it isn't one: ±hh, ±hh:mm or ±hhmm,
  *  with seconds (±hh:mm:ss, ±hhmmss) for the historical offsets Intl names, and
@@ -30,41 +38,62 @@ function offsetMilliseconds(offset: string): number | null {
 
 /** Read wall times in the agent zone, while explicit offsets name their own instant.
  *  A date alone is midnight in the agent zone. A gap or repeated wall time requires
- *  the caller to choose a time or offset. */
+ *  the caller to choose a time or offset. Each refusal quotes what was sent and
+ *  says what to give instead, with a form to copy where one helps; reminder_add
+ *  opens it with "no reminder was set". */
 export function parseReminderTime(atIso: string, timeZone: string): number {
-  const invalid = `"atIso" is not a valid ISO-8601 timestamp: ${atIso}. ${accepted(timeZone)}`;
+  const shown = JSON.stringify(atIso);
   const parts = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-][\d:]+)?)?$/.exec(atIso);
-  if (!parts) throw new Error(invalid);
-  // Validate the date separately so ISO's 24:00 can advance a valid date,
-  // while February 30 cannot silently become March 2. ISO parsing preserves years 0–99.
-  const calendarDate = `${parts[1]}-${parts[2]}-${parts[3]}`;
-  const midnight = Date.parse(`${calendarDate}T00:00:00Z`);
-  if (!Number.isFinite(midnight) || new Date(midnight).getUTCDate() !== +parts[3]) {
-    throw new Error(invalid);
+  // ISO forbids -000000 for year zero.
+  if (!parts || parts[1] === '-000000') {
+    throw new Error(`"atIso" ${shown} isn't a time this tool reads. Give a date and time like "2030-07-15T09:00", read in `
+      + `${timeZone}, or end it with an offset, like "2030-07-15T09:00Z" or "2030-07-15T09:00+01:00". A date alone is `
+      + `midnight in ${timeZone}. For a delay from now, give inSeconds, inMinutes or inHours instead.`);
   }
+  // The offset is checked first, so a time offered to copy below keeps only an
+  // offset this reads.
+  const givenOffset = parts[8] ? offsetMilliseconds(parts[8]) : null;
+  if (parts[8] && givenOffset === null) {
+    throw new Error(`"atIso" ${shown} ends in ${JSON.stringify(parts[8])}, which isn't a UTC offset. `
+      + 'End it with Z for UTC, or an offset like +05:30, +0530 or +05.');
+  }
+  const calendarDate = `${parts[1]}-${parts[2]}-${parts[3]}`;
+  // A time to copy means what the agent meant: it keeps the agent's own offset,
+  // or says which zone reads it.
+  const readIn = parts[8] ? '' : `, read in ${timeZone}`;
+  const example = (time: string) => `"${time}${parts[8] ?? ''}"${readIn}`;
+  // February 30 is refused, not read as March 2.
+  if (!isCalendarDay(+parts[1], +parts[2], +parts[3])) {
+    throw new Error(`"atIso" ${shown} names a day the calendar doesn't have, ${calendarDate}. Give a real date, like ${example('2030-03-01T09:00')}.`);
+  }
+  // A Date keeps milliseconds, so digits past them don't count.
+  if (!isClockTime(+(parts[4] ?? 0), +(parts[5] ?? 0), +(parts[6] ?? 0), +(parts[7] ?? '0').slice(0, 3))) {
+    throw new Error(`"atIso" ${shown} has a time no clock shows: hours run 00 to 23 and minutes and seconds 00 to 59, `
+      + `and 24:00, the end of the day, takes no minutes, seconds or milliseconds after it. Give one like ${example(`${calendarDate}T09:00`)}.`);
+  }
+  const outOfRange = new Error(`"atIso" ${shown}${readIn ? `${readIn},` : ''} is outside the times a reminder can hold, `
+    + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}. Give a time inside that range.`);
+  // A real day and time that a Date can't hold, or on a day it can't hold, is
+  // past one end of its range. ISO's 24:00 advances the date.
   const wall = Date.parse(`${calendarDate}T${parts[4] ?? '00'}:${parts[5] ?? '00'}:${parts[6] ?? '00'}.${(parts[7] ?? '0').slice(0, 3).padEnd(3, '0')}Z`);
-  if (!Number.isFinite(wall)) throw new Error(invalid);
+  if (!Number.isFinite(Date.parse(`${calendarDate}T00:00:00Z`)) || !Number.isFinite(wall)) throw outOfRange;
 
-  if (parts[8]) {
-    const offset = offsetMilliseconds(parts[8]);
-    if (offset === null) {
-      throw new Error(`"atIso" has an invalid UTC offset ${parts[8]}: ${atIso}. ${accepted(timeZone)}`);
-    }
-    const instant = wall - offset;
-    if (Math.abs(instant) > MAX_DATE_MS) {
-      throw new Error(
-        `"atIso" ${atIso} is outside the times a reminder can hold, -271821-04-20T00:00:00Z to +275760-09-13T00:00:00Z.`,
-      );
-    }
+  if (givenOffset !== null) {
+    const instant = wall - givenOffset;
+    if (Math.abs(instant) > MAX_DATE_MS) throw outOfRange;
     return instant;
   }
 
+  // The time an offset can follow: a date alone is its midnight.
+  const asTime = parts[4] === undefined ? `${calendarDate}T00:00` : atIso;
+  const withOffsets = (labels: string[]) => labels.map((label) => JSON.stringify(`${asTime}${label}`)).join(' or ');
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' });
   const offsetAt = (ms: number) => {
     const name = formatter.formatToParts(new Date(ms)).find((part) => part.type === 'timeZoneName')?.value;
     const offset = name ? offsetMilliseconds(name) : null;
     if (!name || offset === null) {
-      throw new Error(`Cannot read the UTC offset for ${timeZone}. Give atIso an explicit UTC offset instead.`);
+      throw new Error(`"atIso" ${shown} has no offset, and the zone it would be read in, ${timeZone}, can't be read here. `
+        + `End it with an offset, like ${withOffsets(['Z', '+01:00'])}, or give a delay from now in inSeconds, inMinutes or inHours.`);
     }
     return { ms: offset, label: name === 'GMT' ? '+00:00' : name.slice(3) };
   };
@@ -77,19 +106,16 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
     const offset = offsetAt(sample);
     offsets.set(offset.ms, offset.label);
   }
-  const candidates = [...offsets].filter(([offset]) => {
-    const instant = wall - offset;
-    return Math.abs(instant) <= MAX_DATE_MS && offsetAt(instant).ms === offset;
-  });
+  const inRange = [...offsets].filter(([offset]) => Math.abs(wall - offset) <= MAX_DATE_MS);
+  if (inRange.length === 0) throw outOfRange;
+  const candidates = inRange.filter(([offset]) => offsetAt(wall - offset).ms === offset);
   if (candidates.length === 1) return wall - candidates[0][0];
   // A date alone is read as its midnight. Name that time, since an offset can follow only a time.
-  const read = parts[4] === undefined ? `${atIso} is read as ${calendarDate}T00:00, which` : atIso;
+  const read = parts[4] === undefined ? `${shown} is read as ${asTime}, which` : shown;
   if (candidates.length > 1) {
-    throw new Error(
-      `"atIso" ${read} occurs twice in ${timeZone}. Include ${candidates.map(([, label]) => label).join(' or ')} to choose the intended instant.`,
-    );
+    throw new Error(`"atIso" ${read} happens twice in ${timeZone}, where the clocks go back over it. `
+      + `End it with the offset you mean: ${withOffsets(candidates.map(([, label]) => label))}.`);
   }
-  throw new Error(
-    `"atIso" ${read} does not exist in ${timeZone}. Choose an existing local time or give an explicit UTC offset.`,
-  );
+  throw new Error(`"atIso" ${read} doesn't exist in ${timeZone}, where the clocks skip over it. Give a time that exists `
+    + `there, or end it with an offset to say which instant you mean, like ${withOffsets([...offsets.values()])}.`);
 }

@@ -27,6 +27,9 @@ import { sendPush } from './push.js';
 import { formatReminderText } from './reminder-text.js';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
+import { HOST_GONE, heldNote, wakeBlocked } from './wake-blocked.js';
+import type { WakeBlocked } from './wake-blocked.js';
+import { describeThrown, noSuchTool, thrownForLog, toolThrew } from './call-texts.js';
 import { addUnits, andList, checkArguments, givenText, ignoredNote } from './arguments.js';
 import type { Length, ToolSchema } from './arguments.js';
 import {
@@ -203,7 +206,7 @@ interface ToolDefinition extends ToolSchema {
 }
 
 const toolDefinitions: ToolDefinition[] = [
-  { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to next wake, message) and how many reminders are pending.',
+  { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to the next wake while one is coming, message), whether wakes can be delivered, and how many reminders are pending.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'heartbeat_configure',
     description: 'Change your own ambient heartbeat schedule. Give any of: the interval, in intervalSeconds, intervalMinutes and intervalHours, which add up, 60 seconds or more; paused; deliveryMode; message. Persists across restarts. With no arguments it changes nothing and shows the schedule. (Reminders are separate — see reminder_add.)',
@@ -229,7 +232,7 @@ const toolDefinitions: ToolDefinition[] = [
       everyMinutes: { type: 'number', description: 'Repeat every N minutes. Adds to everySeconds and everyHours.' },
       everyHours: { type: 'number', description: 'Repeat every N hours. Adds to everySeconds and everyMinutes.' },
     }, required: ['message'] } },
-  { name: 'reminder_list', description: 'List your pending reminders (id, next fire time, recurrence, message).',
+  { name: 'reminder_list', description: 'List your pending reminders (id, when each is due, recurrence, message).',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'reminder_cancel', description: 'Cancel a reminder by its id (from reminder_add / reminder_list).',
     inputSchema: { type: 'object', properties: {
@@ -338,7 +341,7 @@ class HeartbeatServer {
     try {
       switch (req.method) {
         case 'tools/list': conn.sendResponse(req.id, { tools: toolDefinitions }); break;
-        case 'tools/call': conn.sendResponse(req.id, this.handleToolCall(params.name as string, params.arguments ?? {})); break;
+        case 'tools/call': conn.sendResponse(req.id, this.handleToolCall(params.name, params.arguments ?? {})); break;
         case method.FEATURE_SETS_UPDATE: this.handleFeatureSetsUpdateRequest(req); break;
         // §6.6: a method that will never be answered MUST return an error, so
         // everything else — channels/* included, since no channel capability is
@@ -346,7 +349,13 @@ class HeartbeatServer {
         default: conn.sendError(req.id, -32601, `Method not found: ${req.method}`);
       }
     } catch (e) {
-      conn.sendError(req.id, -32000, (e as Error).message);
+      // A tool that threw may have changed something first, unless it only
+      // reads, and the agent is told which. Other methods aren't the agent's.
+      // Whoever runs the host, whom the agent asks if the fault comes back,
+      // finds it in the log with its stack, once the request is answered.
+      const tool = req.method === 'tools/call';
+      conn.sendError(req.id, -32000, tool ? toolThrew(params.name, e) : describeThrown(e));
+      log(`${tool && typeof params.name === 'string' ? params.name : req.method} threw: ${thrownForLog(e)}`);
     }
   }
 
@@ -443,7 +452,7 @@ class HeartbeatServer {
   }
 
   /** Why a wake cannot be delivered right now, or null when it can. */
-  private pushBlockedReason(): string | null {
+  private pushBlocked(): WakeBlocked | null {
     // Once the host has gone, nothing may be armed: a reminder that can't be
     // sent stays due, and arming it would wake the process every millisecond.
     // A push still out when the host goes away fails, and its answer calls
@@ -453,20 +462,8 @@ class HeartbeatServer {
     // closed but before serve ends, so nothing is armed or sent into a closed
     // connection meanwhile. Which comes first depends on the promise steps on
     // both sides, mcpl-core's among them, so this code alone doesn't fix it.
-    if (!this.conn || this.conn.isClosed) return 'the connection to the host has closed';
-    if (!this.mcplEnabled) return 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
-    if (this.notificationOnly) {
-      return 'host sent featureSets/update only as a Notification, which cannot establish ready state (§6.7), '
-        + 'so no wake is delivered on this connection';
-    }
-    if (!this.policyReady) {
-      return 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
-        + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
-    }
-    const state = this.featureSetState();
-    if (state.active) return null;
-    if (state.reason === 'capability_denied') return `capability not granted: ${state.missing.join(', ')} (§5.4 — absence is denial)`;
-    return `feature set "${FS_NAME}" is ${state.reason}`;
+    if (!this.conn || this.conn.isClosed) return HOST_GONE;
+    return wakeBlocked(this.mcplEnabled, this.notificationOnly, this.policyReady, () => this.featureSetState(), FS_NAME);
   }
 
   private text(t: string, isError?: boolean): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
@@ -476,16 +473,18 @@ class HeartbeatServer {
   private statusText(): string {
     const c = this.config;
     const remaining = this.nextFireAt ? Math.max(0, Math.round((this.nextFireAt - Date.now()) / 1000)) : null;
-    const blocked = this.pushBlockedReason();
+    const blocked = this.pushBlocked();
     const mode = c.deliveryMode === 'silent' && this.silentFellBack
-      ? 'silent (host refused the empty silent push; ticks fall back to message mode)'
+      ? 'silent (the host refused a silent wake, which carries no text, so heartbeats arrive as messages. '
+        + "Setting deliveryMode again won't change that; ask whoever runs this host if you need them silent)"
       : c.deliveryMode;
     return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | mode=${mode} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
-      (c.paused || remaining === null ? '' : ` | next in ~${remaining}s`) +
+      // A tick while a wake is blocked is dropped, so none is said to be next.
+      (c.paused || remaining === null || blocked ? '' : ` | next in ~${remaining}s`) +
       ` | reminders=${this.reminders.length}` +
       // Surfaced to the agent deliberately: if wakes cannot be delivered, the
       // agent asking "when do I next wake?" should be told, not reassured.
-      ` | delivery=${blocked ? `BLOCKED (${blocked})` : 'ok'}` +
+      ` | delivery=${blocked ? `BLOCKED (${blocked.reason})` : 'ok'}` +
       ` | message="${c.message}"`;
   }
 
@@ -494,13 +493,13 @@ class HeartbeatServer {
    *  and the tool's own. A key that no tool here takes, and that is a slip for
    *  none of their arguments, does nothing either way: an applied call's
    *  result names it as ignored, and a refused call's names it too. */
-  private handleToolCall(name: string, rawArgs: unknown) {
+  private handleToolCall(name: unknown, rawArgs: unknown) {
     const tool = toolDefinitions.find((t) => t.name === name);
-    if (!tool) return this.text(`Unknown tool: ${name}`, true);
+    if (!tool) return this.text(noSuchTool(name, toolDefinitions.map((t) => t.name)), true);
     const { problems, ignored } = checkArguments(tool, rawArgs, toolDefinitions);
     // Arguments that aren't an object are a problem named above; read them as none.
     const args = (typeof rawArgs === 'object' && rawArgs !== null && !Array.isArray(rawArgs) ? rawArgs : {}) as Record<string, unknown>;
-    const result = this.callTool(name, args, problems);
+    const result = this.callTool(tool.name, args, problems);
     if (ignored.length > 0) result.content[0].text += ` ${ignoredNote(tool, ignored, result.isError === true)}`;
     return result;
   }
@@ -516,9 +515,11 @@ class HeartbeatServer {
     if (problems.length > 0) return this.refuse(name, problems);
     switch (name) {
       case 'heartbeat_trigger': {
-        const blocked = this.pushBlockedReason();
+        const blocked = this.pushBlocked();
         this.fire('manual');
-        return this.text((blocked ? `Heartbeat NOT delivered — ${blocked}. ` : 'Heartbeat fired. ') + this.statusText());
+        if (!blocked) return this.text(`Heartbeat fired. ${this.statusText()}`);
+        return this.text(`heartbeat_trigger: ${REFUSED.heartbeat_trigger}, because ${blocked.reason}. ${blocked.remedy} `
+          + this.statusText(), true);
       }
       case 'reminder_list':
         return this.text(this.listRemindersText());
@@ -585,8 +586,8 @@ class HeartbeatServer {
   private emitSilentHeartbeat(reason: string, now: string, text: string): boolean {
     const conn = this.conn;
     if (!conn) return false;
-    const blocked = this.pushBlockedReason();
-    if (blocked) { log(`suppressed heartbeat push/event — ${blocked}`); return false; }
+    const blocked = this.pushBlocked();
+    if (blocked) { log(`suppressed heartbeat push/event — ${blocked.log}`); return false; }
     sendSilentWithFallback(
       (params) => conn.sendRequest(method.PUSH_EVENT, params),
       this.pushParams('heartbeat', { source: 'heartbeat', reason, silent: true, scheduledAt: now }, []),
@@ -641,8 +642,8 @@ class HeartbeatServer {
   private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null) => void): boolean {
     const conn = this.conn;
     if (!conn) return false;
-    const blocked = this.pushBlockedReason();
-    if (blocked) { log(`suppressed ${kind} push/event — ${blocked}`); return false; }
+    const blocked = this.pushBlocked();
+    if (blocked) { log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
     void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }])).then((outcome) => {
       if ('error' in outcome) log(`push failed (${kind}):`, outcome.error.message);
       else this.logPushResult(outcome.result, kind);
@@ -714,23 +715,10 @@ class HeartbeatServer {
     saveReminders(this.reminders);
     this.retryRefused();
     log(`added reminder ${rem.id} fireAt=${new Date(first).toISOString()} every=${rem.everySeconds ?? 'once'}`);
-    // A fire time the reminder won't keep would be a false success.
-    const blocked = this.pushBlockedReason();
-    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
-  }
-
-  /** Whether no wake can ever be delivered on this connection: an MCP-only
-   *  host, or a pre-0.5 one. */
-  private neverDelivers(): boolean {
-    return !this.mcplEnabled || this.notificationOnly;
-  }
-
-  /** What a due reminder does while no wake can be delivered, for
-   *  reminder_list (`one` false) and for the reminder reminder_add has just
-   *  set (`one` true): it waits until one can, unless none ever can here. */
-  private heldText(blocked: string, one: boolean): string {
-    if (this.neverDelivers()) return `No wake can be delivered on this host: ${blocked}. ${one ? "It won't fire" : 'No reminder will fire'} here.`;
-    return `No wake can be delivered now: ${blocked}. ${one ? 'It' : 'A reminder that falls due'} waits until one can.`;
+    // The time given is when it falls due; while no wake can be delivered, the
+    // note says what happens then.
+    const blocked = this.pushBlocked();
+    return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? `. ${heldNote(blocked, true)}` : ''}`);
   }
 
   private describeReminder(rem: Reminder, now: number): string {
@@ -739,7 +727,7 @@ class HeartbeatServer {
     const refused = this.refused.get(rem.id);
     if (refused) when += `; ${refused.reason}, at ${formatAgentDateTime(refused.at, AGENT_TIME_ZONE)}`;
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
-    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
+    return `due ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
   }
 
   private listRemindersText(): string {
@@ -748,10 +736,9 @@ class HeartbeatServer {
     const lines = [...this.reminders]
       .sort((a, b) => a.fireAt - b.fireAt)
       .map((r) => `${r.id} | ${this.describeReminder(r, now)}`);
-    // While no wake can be delivered, say so and what that means for the
-    // reminders, where the agent looks for them.
-    const blocked = this.pushBlockedReason();
-    const waiting = blocked ? `\n${this.heldText(blocked, false)}` : '';
+    // Say why a due reminder hasn't fired, where the agent looks for it.
+    const blocked = this.pushBlocked();
+    const waiting = blocked ? `\n${heldNote(blocked, false)}` : '';
     const refused = this.reminders.some((r) => this.refused.has(r.id))
       ? '\nA reminder whose push was refused or failed is tried again when the host next updates its settings, when a reminder is added or cancelled, or when the server restarts, and a recurring one also an interval after it was refused or failed.'
       : '';
@@ -764,7 +751,12 @@ class HeartbeatServer {
     if (problems.length > 0) return this.refuse('reminder_cancel', problems);
     const before = this.reminders.length;
     this.reminders = this.reminders.filter((r) => r.id !== id);
-    if (this.reminders.length === before) return this.text(`No reminder with id ${id}.`);
+    // An error, though no reminder by that id will fire: the id may be
+    // mistyped, and then the reminder the agent meant still will.
+    if (this.reminders.length === before) {
+      return this.refuse('reminder_cancel', [`No reminder has the id "${id}". If it was a one-off that has fired, or it was `
+        + 'cancelled already, there\'s nothing more to do. Otherwise, reminder_list shows the pending ids.']);
+    }
     saveReminders(this.reminders);
     this.retryRefused();
     log(`cancelled reminder ${id}`);
@@ -785,10 +777,10 @@ class HeartbeatServer {
     this.cancelReminderWake?.();
     this.cancelReminderWake = null;
     if (this.reminders.length === 0) return;
-    const blocked = this.pushBlockedReason();
+    const blocked = this.pushBlocked();
     if (blocked !== null) {
       log(`none of the ${this.reminders.length} reminder(s) `
-        + `${this.neverDelivers() ? 'will fire on this host' : 'fires until a wake can be delivered'}: ${blocked}`);
+        + `${blocked.final ? 'will fire on this host' : 'fires until a wake can be delivered'}: ${blocked.log}`);
       return;
     }
     const due = this.reminders.map((r) => this.dueAt(r)).filter((t): t is number => t !== null);

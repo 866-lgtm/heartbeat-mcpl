@@ -57,17 +57,19 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
     });
 
     for (const [atIso, reason] of [
-      ['2024-11-03T01:30:00', /occurs twice.*America\/New_York.*-04:00.*-05:00/],
-      ['2024-03-10T02:30:00', /does not exist in America\/New_York/],
-      ['2099-07-15T25:00:00Z', /valid ISO-8601/],
-      ['2099-07-15T09:60:00-04:00', /valid ISO-8601/],
-      ['2099-07-15T09:00:00+05:3000', /invalid UTC offset/],
+      ['2024-11-03T01:30:00', /happens twice in America\/New_York.*"2024-11-03T01:30:00-04:00" or "2024-11-03T01:30:00-05:00"/],
+      ['2024-03-10T02:30:00', /doesn't exist in America\/New_York/],
+      ['2099-07-15T25:00:00Z', /has a time no clock shows/],
+      ['2099-07-15T09:60:00-04:00', /has a time no clock shows/],
+      ['2099-02-30T09:00:00', /names a day the calendar doesn't have, 2099-02-30\./],
+      ['2099-07-15T09:00:00+05:3000', /ends in "\+05:3000", which isn't a UTC offset/],
       ['+275760-09-13T00:00:00-01:00', /outside the times a reminder can hold/],
     ]) {
       await t.test(`reject ${atIso} without changing persisted reminders`, async () => {
         const before = saved();
         const result = await session.callTool('reminder_add', { message: 'ambiguous', atIso });
         assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /^reminder_add: no reminder was set\. "atIso" "/);
         assert.match(result.content[0].text, reason);
         assert.equal(saved(), before);
       });

@@ -7,7 +7,7 @@ On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 `origin.source: heartbeat`) to wake the agent for a self-check-in. The agent
 itself configures its own schedule via three MCP tools:
 
-- `heartbeat_status` — show current interval, paused state, time-to-next, message
+- `heartbeat_status` — show current interval, paused state, time to the next wake while one is coming, message, and whether wakes can be delivered
 - `heartbeat_configure` — set the interval (`intervalSeconds`, `intervalMinutes` and `intervalHours`, which add up, 60 seconds or more), `paused`, `deliveryMode`, `message`; persists across restarts
   - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
   - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose (see [Silent mode](#silent-mode) for what it requires)
@@ -27,7 +27,11 @@ own: `pausedReason` sent beside `paused` is no slip for it, while
 `pausedMessage` sent beside it is a slip for `message`. Any other name a tool
 doesn't take is ignored, and the result says so and what the tool takes,
 unless the call sends nothing else to a tool that takes arguments, which then
-refuses it. Lengths are kept to the millisecond.
+refuses it. Lengths are kept to the millisecond. A `heartbeat_trigger` whose
+heartbeat can't be sent, and a `reminder_cancel` whose id no pending reminder
+has, are errors too, each saying why and what to do.
+"Heartbeat fired" means the heartbeat was sent; a host that then refuses it
+says so only in this server's log.
 
 ## Reminders
 
@@ -96,7 +100,7 @@ Otherwise the marker is only an empty push, with nothing in it for the agent to 
   This server then re-sends that tick in message mode: the timestamped
   configured prompt, with `origin.silentFallback: true`. It logs one `WARNING`
   per process, and `heartbeat_status` reports
-  `mode=silent (host refused the empty silent push; …)`. Every tick tries
+  `mode=silent (the host refused a silent wake, …)`. Every tick tries
   silent first.
 - **Older hosts accept the empty push** and wake the agent with nothing new to
   read. The agent then often invents a cause for the wake. Hosts do not

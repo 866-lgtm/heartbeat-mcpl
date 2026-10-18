@@ -5,11 +5,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { POLICY, logged, origin, serverWithHost } from './scripted-host.js';
 
+// The log's reasons, in the protocol's terms for whoever runs the host.
 const MCP_ONLY = 'host is MCP-only (no experimental.mcpl); push events are not part of MCP (§3.2)';
 const PRE_05 = 'host sent featureSets/update only as a Notification, which cannot establish ready state (§6.7), '
   + 'so no wake is delivered on this connection';
 const NOT_READY = 'no valid featureSets/update Request in force (none yet, or the last was malformed); '
   + 'capability-dependent behavior is unavailable until one arrives (§5.3)';
+// What the agent reads: where none will fire, for the reminder just set
+// (`one`) and in the listing, and where a reminder waits.
+const ASK = "Calling again won't change that; ask whoever runs this host if you need wakes.";
+const never = (why: string) => ({
+  one: `No wake can be delivered on this host, because ${why}, so it won't fire here. ${ASK}`,
+  listed: `No wake can be delivered on this host, because ${why}, so no reminder will fire here. ${ASK}`,
+});
+const MCP_ONLY_TEXT = never("the host doesn't support the push events wakes need");
+const PRE_05_TEXT = never("the host set this server up in an older form that can't turn wakes on");
+const NOT_READY_LISTED = "No wake can be delivered now, because the host hasn't finished setting this server up, or its last "
+  + "settings message was malformed. A reminder that falls due waits until one can. If that doesn't change, ask whoever runs this host.";
+const NOT_READY_ONE = "No wake can be delivered now, because the host hasn't finished setting this server up, or its last "
+  + "settings message was malformed, so it waits until one can. If that doesn't change, ask whoever runs this host.";
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 test('on an MCP-only host, a stored reminder is counted in the log at start, and replies say none will fire there', async (t) => {
@@ -21,12 +35,28 @@ test('on an MCP-only host, a stored reminder is counted in the log at start, and
   t.after(h.close);
   await logged(h, `none of the 1 reminder(s) will fire on this host: ${MCP_ONLY}`);
   const added = await h.call('reminder_add', { message: 'stretch', inMinutes: 5 });
-  assert.match(added, new RegExp(String.raw`^Reminder rem_\S+ set: next \S+ \[[^\]]+\] \(~300s\) \| one-shot \| "stretch" `
-    + `${escaped(`No wake can be delivered on this host: ${MCP_ONLY}. It won't fire here.`)}$`));
+  assert.match(added, new RegExp(String.raw`^Reminder rem_\S+ set: due \S+ \[[^\]]+\] \(~300s\) \| one-shot \| "stretch"\. `
+    + `${escaped(MCP_ONLY_TEXT.one)}$`));
   await logged(h, `none of the 2 reminder(s) will fire on this host: ${MCP_ONLY}`);
   const list = await h.call('reminder_list');
-  assert.match(list, /^rem_old \| next .* \(overdue\) \| one-shot \| "old"$/m);
-  assert.ok(list.endsWith(`\nNo wake can be delivered on this host: ${MCP_ONLY}. No reminder will fire here.`), list);
+  assert.match(list, /^rem_old \| due .* \(overdue\) \| one-shot \| "old"$/m);
+  assert.ok(list.endsWith(`\n${MCP_ONLY_TEXT.listed}`), list);
+  // A trigger sends nothing and says why, and the status names no next tick.
+  const trigger = await h.request('tools/call', { name: 'heartbeat_trigger', arguments: {} }) as { isError?: boolean; content: Array<{ text: string }> };
+  assert.equal(trigger.isError, true);
+  assert.match(trigger.content[0]!.text, new RegExp(`^${escaped(`heartbeat_trigger: no heartbeat was sent, because the host doesn't `
+    + `support the push events wakes need. ${ASK} `)}`
+    + String.raw`Heartbeat ACTIVE \| mode=message \| interval=14400s \(4\.00h\) \| reminders=2 \| delivery=BLOCKED \(`));
+  // The log keeps the protocol's terms for the dropped heartbeat, in message
+  // mode and in silent mode. Each line comes before the DROPPED line that
+  // follows it on the same stream.
+  const suppressed = `[heartbeat-mcpl] suppressed heartbeat push/event — ${MCP_ONLY}`;
+  await logged(h, 'DROPPED heartbeat (manual)');
+  assert.equal(h.stderr().split('\n').filter((line) => line === suppressed).length, 1, h.stderr());
+  await h.call('heartbeat_configure', { deliveryMode: 'silent' });
+  await h.call('heartbeat_trigger');
+  await logged(h, 'DROPPED heartbeat (manual, silent)');
+  assert.equal(h.stderr().split('\n').filter((line) => line === suppressed).length, 2, h.stderr());
   assert.equal(h.pushes.length, 0);
 });
 
@@ -35,9 +65,9 @@ test('a pre-0.5 host, whose policy comes only as a Notification, hears that none
   t.after(h.close);
   h.notify('featureSets/update', POLICY);
   const added = await h.call('reminder_add', { message: 'soon', inSeconds: 1 });
-  assert.ok(added.endsWith(`"soon" No wake can be delivered on this host: ${PRE_05}. It won't fire here.`), added);
+  assert.ok(added.endsWith(`"soon". ${PRE_05_TEXT.one}`), added);
   await logged(h, `none of the 1 reminder(s) will fire on this host: ${PRE_05}`);
-  assert.ok((await h.call('reminder_list')).endsWith(`\nNo wake can be delivered on this host: ${PRE_05}. No reminder will fire here.`));
+  assert.ok((await h.call('reminder_list')).endsWith(`\n${PRE_05_TEXT.listed}`));
   // A host that does send a Request speaks 0.5 after all, and the reminder fires.
   await h.request('featureSets/update', POLICY);
   await h.pushCount(1);
@@ -48,23 +78,23 @@ test('once wakes are allowed a reply has no held note, and a malformed Request h
   const h = await serverWithHost(() => ({}));
   t.after(h.close);
   const added = await h.call('reminder_add', { message: 'later', inHours: 1 });
-  assert.match(added, /^Reminder rem_\S+ set: next \S+ \[[^\]]+\] \(~3600s\) \| one-shot \| "later"$/);
+  assert.match(added, /^Reminder rem_\S+ set: due \S+ \[[^\]]+\] \(~3600s\) \| one-shot \| "later"$/);
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
   await logged(h, `none of the 1 reminder(s) fires until a wake can be delivered: ${NOT_READY}`);
   const list = await h.call('reminder_list');
-  assert.ok(list.endsWith(`\nNo wake can be delivered now: ${NOT_READY}. A reminder that falls due waits until one can.`), list);
+  assert.ok(list.endsWith(`\n${NOT_READY_LISTED}`), list);
 });
 
 test('a Notification after a malformed Request is a 0.5 host\'s update: a reminder waits, and fires once a valid Request comes', async (t) => {
-  // A host that has sent any Request speaks 0.5, so it is never told that no
-  // reminder will fire on it, even after a Notification.
+  // A host that has sent any Request speaks 0.5, so a Notification after it
+  // doesn't make it one that sends its policy only as Notifications.
   const h = await serverWithHost(() => ({}), { policy: false });
   t.after(h.close);
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
   h.notify('featureSets/update', POLICY);
   const added = await h.call('reminder_add', { message: 'soon', atIso: new Date(Date.now() + 1000).toISOString() });
-  assert.ok(added.endsWith(`"soon" No wake can be delivered now: ${NOT_READY}. It waits until one can.`), added);
-  assert.ok((await h.call('reminder_list')).endsWith(`\nNo wake can be delivered now: ${NOT_READY}. A reminder that falls due waits until one can.`));
+  assert.ok(added.endsWith(`"soon". ${NOT_READY_ONE}`), added);
+  assert.ok((await h.call('reminder_list')).endsWith(`\n${NOT_READY_LISTED}`));
   await logged(h, `none of the 1 reminder(s) fires until a wake can be delivered: ${NOT_READY}`);
   assert.doesNotMatch(h.stderr(), /WARNING: initial policy has still not arrived as a Request/);
   await h.request('featureSets/update', POLICY);

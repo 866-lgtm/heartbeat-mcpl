@@ -87,8 +87,12 @@ try {
 
   // ── 0. initial policy: featureSets/update Request → degradation receipt ──
   console.log('0) no wake is delivered before policy; featureSets/update is answered with a receipt');
-  const preText = (await session.callTool('heartbeat_trigger', {}))?.content?.[0]?.text ?? '';
-  check(/NOT delivered/.test(preText), `trigger before policy reports non-delivery (${preText.slice(0, 80)}…)`);
+  const pre = await session.callTool('heartbeat_trigger', {});
+  const preText = pre?.content?.[0]?.text ?? '';
+  check(pre?.isError === true && preText.startsWith("heartbeat_trigger: no heartbeat was sent, because the host hasn't finished setting this server up"),
+    `trigger before policy reports non-delivery as an error (${preText.slice(0, 80)}…)`);
+  check(/\| delivery=BLOCKED \(the host hasn't finished setting this server up, or its last settings message was malformed\) \|/.test(preText),
+    'its status names the reason in plain words');
 
   const receipt = await sendPolicy();
   check(receipt?.accepted === true, `receipt accepted (${JSON.stringify(receipt)})`);
