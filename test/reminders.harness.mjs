@@ -23,7 +23,8 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 // mcpl-harness is not published to npm, so HostSession is loaded from a
 // checkout. Resolution order: $MCPL_HARNESS_SESSION (explicit path to
 // src/session.ts), then a sibling checkout next to this repo (what CI clones
-// — see .github/workflows/publish.yml), then known dev-box locations.
+// — see .github/workflows/ci.yml and publish.yml), then known dev-box
+// locations.
 const HARNESS_CANDIDATES = [
   process.env.MCPL_HARNESS_SESSION,
   join(HERE, '..', '..', 'mcpl-harness', 'src', 'session.ts'),
@@ -50,18 +51,22 @@ function check(cond, label) {
   else { console.log(`  FAIL - ${label}`); failures++; }
 }
 
-// Collect reminder push events (ignore any ambient heartbeat pushes).
-const fires = []; // { text, id, at }
+// Collect reminder push events (ignore any ambient heartbeat pushes). Each
+// fire's text is `[reminder <id>, … · current time: …] <message>`; `body` is
+// the message after that header, `headerId` the id the header names.
+const HEADER = /^\[reminder (rem_[^,\s]+)(?:, set [^·]+|, repeats every \d+s)? · current time: [^\]]+\]\] /;
+const fires = []; // { text, body, headerId, id, at }
 function attach(session) {
   session.on('event', (ev) => {
     if (ev.kind !== 'push') return;
     const origin = ev.data?.origin ?? {};
     if (origin.source !== 'reminder') return;
     const text = ev.data?.payload?.content?.[0]?.text ?? '';
-    fires.push({ text, id: origin.reminderId, at: Date.now() });
+    const m = text.match(HEADER);
+    fires.push({ text, body: m ? text.slice(m[0].length) : null, headerId: m?.[1] ?? null, id: origin.reminderId, at: Date.now() });
   });
 }
-const count = (text) => fires.filter((f) => f.text === text).length;
+const count = (body) => fires.filter((f) => f.body === body).length;
 
 const env = { HEARTBEAT_REMINDERS_FILE: remindersFile, HEARTBEAT_CONFIG_FILE: configFile };
 let session = new HostSession({ command: 'node', args: [SERVER, '--stdio'], env, autoApprove: true });
@@ -82,8 +87,12 @@ try {
 
   // ── 0. initial policy: featureSets/update Request → degradation receipt ──
   console.log('0) no wake is delivered before policy; featureSets/update is answered with a receipt');
-  const preText = (await session.callTool('heartbeat_trigger', {}))?.content?.[0]?.text ?? '';
-  check(/NOT delivered/.test(preText), `trigger before policy reports non-delivery (${preText.slice(0, 80)}…)`);
+  const pre = await session.callTool('heartbeat_trigger', {});
+  const preText = pre?.content?.[0]?.text ?? '';
+  check(pre?.isError === true && preText.startsWith("heartbeat_trigger: no heartbeat was sent, because the host hasn't finished setting this server up"),
+    `trigger before policy reports non-delivery as an error (${preText.slice(0, 80)}…)`);
+  check(/\| delivery=BLOCKED \(the host hasn't finished setting this server up, or its last settings message was malformed\) \|/.test(preText),
+    'its status names the reason in plain words');
 
   const receipt = await sendPolicy();
   check(receipt?.accepted === true, `receipt accepted (${JSON.stringify(receipt)})`);
@@ -100,6 +109,9 @@ try {
   check(count('ONE') === 0, 'no premature fire before due');
   await sleep(3500); // ~7.5s total > 5s due
   check(count('ONE') === 1, 'fired exactly once at due');
+  const one = fires.find((f) => f.body === 'ONE');
+  check(!!one && one.headerId === one.id, `the text names its reminder and the time (${one?.text ?? 'no fire'})`);
+  check(!!one && /^\[reminder \S+, set /.test(one.text), 'a one-shot says when it was set');
 
   // ── 2. recurring fires on cadence, then cancel silences it ──────────────
   console.log('2) recurring reminder fires on cadence; cancel silences it');
@@ -110,6 +122,8 @@ try {
   await sleep(12000); // expect fires at ~5s and ~10s
   const afterTwoIntervals = count('REC');
   check(afterTwoIntervals >= 2, `recurring fired on cadence (${afterTwoIntervals} fires in ~12s)`);
+  check(fires.some((f) => f.body === 'REC' && f.text.startsWith(`[reminder ${recId}, repeats every 5s · current time: `)),
+    'a recurring fire names its interval');
   await session.callTool('reminder_cancel', { id: recId });
   const atCancel = count('REC');
   await sleep(7000); // one more interval would have elapsed

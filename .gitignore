@@ -4,3 +4,12 @@ dist/
 *.log
 # per-instance runtime state, not source
 heartbeat-config.json
+heartbeat-reminders.json
+
+# package-lock.json is the only lockfile: the publish workflow installs it
+# with npm. Make dependency changes with npm, so that package-lock.json
+# changes with package.json. Where there's no bun.lock, bun seeds one from
+# package-lock.json, then keeps using its own, so after package-lock.json
+# changes, delete bun.lock before installing with bun.
+bun.lock
+bun.lockb

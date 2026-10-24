@@ -1,0 +1,11 @@
+{
+  // Type-checks the TypeScript tests, which tsx runs without checking; npm
+  // test runs it after the build. The .mjs harnesses aren't included: each
+  // loads mcpl-harness's HostSession from a path computed at run time, so
+  // what they read from a session is untyped to tsc either way.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"]
+}
